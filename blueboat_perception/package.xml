@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>blueboat_perception</name>
+  <version>0.1.0</version>
+  <description>
+    Perception for the BlueBoat side-scan survey: takes the GCS seabed images
+    and their metadata, runs preprocessing (identity), a detector (a dummy
+    today, YOLO later) and a calibration hook (identity), and publishes
+    detections for the station map plus one record per image for the future
+    Belief module. Also has a dataset-creation mode and an offline CLI over
+    recorded sessions. The core is ROS-free and deterministic.
+  </description>
+  <maintainer email="killian.bertrand2002@gmail.com">Killian BERTRAND</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>vision_msgs</depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <!-- dataset mode starts `ros2 bag record` for the simulator ground truth -->
+  <exec_depend>ros2bag</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

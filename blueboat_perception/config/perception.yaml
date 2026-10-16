@@ -1,0 +1,20 @@
+# BlueBoat-Perception node defaults (docs/topics.md §6). The launch file
+# passes mode / dataset_name / world_dir / data_dir on top of these.
+perception:
+  ros__parameters:
+    record_log: true          # <root>/data/Perception_data/live/<stream_id>.jsonl
+    join_timeout_s: 5.0       # release an incomplete image key after this
+    detector: dummy_center    # the station's former in-process dummy
+    # Detector input (PREPROCESSING_STUDY.md §6): fixed_gray = one fixed mapping of
+    # the raw dB (decision 6.4, parameters in core/data/<mapping>.json, fitted on
+    # real data); identity = the GCS display PNG as is (the baseline).
+    preprocess: fixed_gray
+    detector_input_mapping: fixed_gray_v1
+    near_range_mask_m: 0.0    # decision 6.5: 0.0 (off) or 0.75 (the GCS live nadir blank)
+    turn_window_s: 1.0        # decision 6.2: yaw-rate smoothing for the turn flags
+    calibration: identity
+    # Localisation uncertainty (model geometric_v1) -- ASSUMED, not measured:
+    sigma_h_m: 0.10
+    sigma_heading_deg: 2.0
+    sigma_nav_m: 1.0
+    footprint_row_step: 16
