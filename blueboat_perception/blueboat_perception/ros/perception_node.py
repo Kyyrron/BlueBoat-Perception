@@ -1,8 +1,11 @@
 """The Perception ROS node (thin): join -> core pipeline -> publish.
 
-Subscribes **only** to the three GCS seabed-image topics (RELIABLE /
-KEEP_LAST 32 / VOLATILE, the GCS publisher's profile -- CM-4). It never
-subscribes to simulator ground truth, sea state, the sonar or the boat.
+Subscribes to the three GCS seabed-image topics (RELIABLE / KEEP_LAST 32 /
+VOLATILE, the GCS publisher's profile -- CM-4). It never subscribes to sea
+state, the sonar or the boat. **Dataset mode in a simulator world only**
+(owner's decision, 2026-10-16): it also reads the simulator's ground truth
+(``ground_truth.py``), which feeds the dataset label writer and nothing else.
+The pipeline, the detections and the records never see it.
 
 Publishes:
 * ``/sss_ai/detections`` (``vision_msgs/Detection2DArray``, one per image,
@@ -22,6 +25,7 @@ import signal
 import socket
 import sys
 import time
+from collections import deque
 from pathlib import Path
 from typing import Optional
 
@@ -96,6 +100,11 @@ class PerceptionNode(Node):
         self.log = (RecordLog(perception_dir(self.root, "live"))
                     if p["record_log"] else None)
         self.dataset: Optional[DatasetWriter] = None
+        #: dataset mode in a simulator world: the label source and its ground truth
+        self.label_source = None
+        self.ground_truth = None
+        self.label_wait_s = float(p["label_wait_s"])
+        self._pending_writes: deque = deque()
         if self.mode == "dataset":
             self.dataset = self._open_dataset(p)
 
@@ -123,6 +132,7 @@ class PerceptionNode(Node):
             "detector": "dummy_center", "preprocess": "fixed_gray",
             "detector_input_mapping": "fixed_gray_v1", "near_range_mask_m": 0.0,
             "turn_window_s": 1.0,
+            "label_source": "auto", "label_min_rows": 3, "label_wait_s": 3.0,
             "calibration": "identity", "sigma_h_m": 0.10,
             "sigma_heading_deg": 2.0, "sigma_nav_m": 1.0, "footprint_row_step": 16,
             **DEFAULT_TOPICS,
@@ -133,6 +143,7 @@ class PerceptionNode(Node):
         cfg = {"pipeline": self.pipeline.config.to_json(), "node": {
             k: p[k] for k in ("mode", "dataset_name", "world_dir", "join_timeout_s")}}
         forbidden = [sss_data_dir(self.root)]
+        labels = self._open_labels(p)
         try:
             if p["dataset_path"]:
                 # Claimed by the launch file (which also points the
@@ -140,14 +151,40 @@ class PerceptionNode(Node):
                 d = Path(p["dataset_path"])
                 return DatasetWriter(d, name=d.name, world_dir=p["world_dir"],
                                      config=cfg, forbidden_roots=forbidden,
+                                     label_source=labels,
                                      detector_input=self.pipeline.detector_input_info())
             return DatasetWriter.create(self.root, p["dataset_name"],
                                         world_dir=p["world_dir"], config=cfg,
-                                        forbidden_roots=forbidden,
+                                        forbidden_roots=forbidden, label_source=labels,
                                         detector_input=self.pipeline.detector_input_info())
         except DatasetError as exc:
             self.get_logger().error(f"dataset mode refused: {exc}")
             raise
+
+    def _open_labels(self, p: dict):
+        """Dataset mode only: the simulator ground-truth label source, or None
+        (no world, ``label_source: none``, or a world without objects)."""
+        if p["label_source"] == "none" or not p["world_dir"]:
+            self.get_logger().info("dataset labels: none (no simulator world)"
+                                   if not p["world_dir"] else "dataset labels: off")
+            return None
+        if p["label_source"] != "auto":
+            raise ValueError(f"label_source must be auto|none, got {p['label_source']!r}")
+        from ..core.sim_labels import GroundTruthBuffer, SimGroundTruthLabelSource, load_world
+        from . import ground_truth
+        try:
+            world = load_world(p["world_dir"])
+        except (OSError, ValueError, KeyError) as exc:
+            self.get_logger().error(f"dataset labels: none -- {exc}")
+            return None
+        self.ground_truth = GroundTruthBuffer()
+        self.label_source = SimGroundTruthLabelSource(world, self.ground_truth,
+                                                      min_rows=p["label_min_rows"])
+        ground_truth.subscribe(self, self.ground_truth)
+        self.get_logger().info(
+            f"dataset labels: simulator ground truth, {len(world.objects)} objects "
+            f"({world.path}), {len(self.label_source.classes)} classes")
+        return self.label_source
 
     # ---- input -------------------------------------------------------------------
     def _on_image(self, msg: Image, part: str) -> None:
@@ -184,6 +221,9 @@ class PerceptionNode(Node):
     def _poll(self) -> None:
         for r in self.join.poll(time.monotonic()):
             self._process(r)
+        self._drain_writes()
+        if self.ground_truth is not None:
+            self.ground_truth.prune()
 
     # ---- processing --------------------------------------------------------------
     def _process(self, rel: Released) -> None:
@@ -219,10 +259,37 @@ class PerceptionNode(Node):
         if self.log is not None:
             self.log.write(record)
         if self.dataset is not None:
-            try:
-                self.dataset.write(img, record, inp)
-            except (OSError, DatasetError) as exc:
-                self.get_logger().error(f"dataset write failed for {rel.key}: {exc}")
+            self._dataset_write(img, record, inp)
+
+    # ---- dataset -----------------------------------------------------------------
+    def _dataset_write(self, img, record, inp) -> None:
+        """Write now, or queue (in order) until the picture's ground truth has
+        arrived, at most ``label_wait_s``."""
+        if self.label_source is not None and (self._pending_writes
+                                              or not self.label_source.ready(img)):
+            self._pending_writes.append((time.monotonic() + self.label_wait_s,
+                                         img, record, inp))
+            self._drain_writes()
+            return
+        self._write_sample(img, record, inp)
+
+    def _drain_writes(self, force: bool = False) -> None:
+        now = time.monotonic()
+        while self._pending_writes:
+            deadline, img, record, inp = self._pending_writes[0]
+            if not (force or now >= deadline or self.label_source.ready(img)):
+                break
+            self._pending_writes.popleft()
+            if not self.label_source.ready(img):
+                self.get_logger().warning(
+                    f"dataset {img.key}: ground truth incomplete, labelled with what arrived")
+            self._write_sample(img, record, inp)
+
+    def _write_sample(self, img, record, inp) -> None:
+        try:
+            self.dataset.write(img, record, inp)
+        except (OSError, DatasetError) as exc:
+            self.get_logger().error(f"dataset write failed for {img.key}: {exc}")
 
     def _publish_status(self) -> None:
         status = {
@@ -231,7 +298,13 @@ class PerceptionNode(Node):
             "dataset": (None if self.dataset is None else
                         {"name": self.dataset.name, "dir": str(self.dataset.dir),
                          "images": self.dataset.count,
-                         "skipped_no_png": self.dataset.skipped_no_png}),
+                         "skipped_no_png": self.dataset.skipped_no_png,
+                         "label_source": self.dataset.labels.name,
+                         "labels": (self.label_source.stats()
+                                    if self.label_source is not None else None),
+                         "pending_label_writes": len(self._pending_writes),
+                         "ground_truth": (self.ground_truth.stats()
+                                          if self.ground_truth is not None else None)}),
             "detector": {"name": self.pipeline.detector.name,
                          "dummy": bool(self.pipeline.detector.is_dummy)},
             "streams": self.join.stats_json(),
@@ -251,6 +324,7 @@ class PerceptionNode(Node):
         if self.log is not None:
             self.log.close()
         if self.dataset is not None:
+            self._drain_writes(force=True)
             self.dataset.close()
 
 

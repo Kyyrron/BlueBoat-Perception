@@ -30,14 +30,18 @@ and the code disagree, the code wins: read the file before trusting a descriptio
       JSON);
     - `pipeline.py`, `join.py`, `session.py`, `dataset.py`, `labels.py`,
       `dataroot.py`, `recordlog.py`, `stats.py`;
-    - `data/fixed_gray_v1.json` — the fixed mapping's parameters.
+    - `sim_labels.py` — dataset labels from the simulator's ground truth (§4);
+    - `data/fixed_gray_v1.json` — the fixed mapping's parameters;
+      `data/yolo_classes_v1.json` — the frozen YOLO classes.
   - `ros/perception_node.py` + `ros/convert.py` — the thin node, and the only place
-    rclpy and message types are imported.
+    rclpy and message types are imported. `ros/ground_truth.py` — the dataset mode's
+    two ground-truth subscriptions, and the only online file naming them.
   - `cli/offline.py` — `blueboat-perception-offline`.
   - `launch/perception_launch.py`, `config/perception.yaml`, `tests/` (pytest).
 - `tools/` (not installed):
   - `fit_detector_input.py` — fits a fixed mapping;
-  - `preprocessing_study.py` — reproduces STUDY §5.
+  - `preprocessing_study.py` — reproduces STUDY §5;
+  - `draw_labels.py` — draws a dataset's boxes and checks their intensities.
 - `docs/` — DESIGN, topics, PREPROCESSING_STUDY, REFERENCES, REQUESTS, LIVE_CHECKS;
   `data/phase4_2026-10-16.json`.
 
@@ -66,8 +70,8 @@ and the code disagree, the code wins: read the file before trusting a descriptio
   - `<root>/data/Perception_data/offline/<session>/` — `records.jsonl`,
     `detections.json`, `summary.json`;
   - `<root>/data/Dataset_data/<name>/` — dataset mode: `images/` (the detector input),
-    `display/`, `labels/` (empty), `raw/`, `manifest.json`, `data.yaml`,
-    `ground_truth_bag/`.
+    `display/`, `labels/` (YOLO, from the simulator's ground truth in a world run; else
+    empty), `raw/`, `manifest.json`, `data.yaml`, `ground_truth_bag/`.
   - Names are claimed exclusively (`-2`, `-3` …); nothing is ever overwritten.
 - **Started by MCS** (`launch_manager.perception_command`): every real-robot launch in
   `mode:=normal`, and every personalized-world Gazebo launch in the launch dialog's
@@ -85,10 +89,15 @@ and the code disagree, the code wins: read the file before trusting a descriptio
    Live inputs are bit-identical to the session's npz + JSON, so any run-dependent value
    goes under `provenance`, and nothing else may depend on the path. Checked live:
    `LIVE_CHECKS.md` checks 2 and 5.
-4. **Online code never reads simulator ground truth or the sonar.** The node subscribes
-   to the three image topics only (a test parses the AST; another sweeps the sources for
-   topic names). The dataset-mode ground-truth bag is a separate `ros2 bag record` the
-   launch file starts.
+4. **Simulator ground truth reaches the dataset labels and nothing else; the sonar
+   nothing at all.** Owner's decision, 2026-10-16, revising "online code never reads
+   ground truth":
+   - the node subscribes to the two ground-truth topics only in `mode:=dataset` with a
+     `world_dir`, from `_open_labels`, through `ros/ground_truth.py`;
+   - the detection path (pipeline, detectors, preprocessing, calibration, records)
+     never imports `sim_labels`, so records are identical with or without labels;
+   - tests: the source sweep, the AST checks, the import check, the record identity;
+   - the archival `ground_truth_bag/` is still recorded, and re-labels offline.
 5. **Never write into a recording session or another module's tree** (CM-7, CM-3).
    Neighbour modules are not edited from here; needs go to `docs/REQUESTS.md`.
 6. **The detector input never changes the originals.** SSS forms the pictures. A
@@ -125,6 +134,14 @@ and the code disagree, the code wins: read the file before trusting a descriptio
   - Flags only: no row or detection is removed.
 - **Dataset mode** writes the detector input as the training image. The sidecar declares
   `intensity_mapping: log`, `log_range_db = hi − lo` for the Aug Studio.
+- **Labels** (dataset mode in a simulator world, `core/sim_labels.py`, DESIGN §7):
+  - one YOLO box per object = its highlight + its acoustic shadow;
+  - built per picture row from the ping's exact rendering pose and the renderer's
+    contacts, with the renderer's own beam geometry;
+  - classes = the 29 World Builder classes, frozen and append-only;
+  - multipath ghosts, wall echoes and hidden pings are skipped and counted;
+  - checked against noise-free renders of the recorded pings (`LIVE_CHECKS.md`
+    check 6).
 
 ## 5. Commands
 ```bash
@@ -136,7 +153,10 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /usr/bin/python3 -m pytest
 ros2 launch blueboat_perception perception_launch.py [mode:=dataset dataset_name:=…] [world_dir:=…]
 # offline over a session, compared with its live log
 python3 -m blueboat_perception.cli.offline <session> [--compare <live.jsonl>] \
-    [--preprocess fixed_gray|identity] [--near-range-mask-m 0.75] [--dataset NAME]
+    [--preprocess fixed_gray|identity] [--near-range-mask-m 0.75] \
+    [--dataset NAME [--world <world dir> --ground-truth-bag <dataset>/ground_truth_bag]]
+# look at a dataset's labels (overlays, crops, highlight/shadow intensities)
+/usr/bin/python3 tools/draw_labels.py <dataset> --out DIR [--crops] [--stats]
 # status during a run
 ros2 topic echo --once /sss_ai/perception/status std_msgs/msg/String \
     --qos-durability transient_local --qos-reliability reliable
@@ -152,8 +172,9 @@ ros2 topic echo --once /sss_ai/perception/status std_msgs/msg/String \
   `SSS-Dataset-Aug-Studio/.venv/bin/python -m pytest tests/test_dataset.py`.
 
 ## 6. Gates (2026-10-16)
-- **Perception:** 79 pass / 4 skip. The skips: 3 corpus folders without stored
-  detections, and the pydantic test on the system python.
+- **Perception:** 109 pass / 4 skip. The skips: 3 corpus folders without stored
+  detections, and the pydantic test on the system python. The class-map test reads the
+  simulator's source beside this module and skips without it.
 - **SSS** (shares this module's contract): 353 pass / 50 skip, including the golden
   regression `tests/test_perception_golden.py` and `tests/test_perception_bridge.py`.
 - **MCS:** `smoke_test.py` PASSED, including `perception ok`; `ruff check .` clean.
@@ -165,5 +186,6 @@ ros2 topic echo --once /sss_ai/perception/status std_msgs/msg/String \
 - **Live checks and the real-boat command sheet:** `docs/LIVE_CHECKS.md`.
 - **The SSS side** (what changed there, what is pinned unchanged):
   `BlueBoat-SSS/blueboat_sss/blueboat_gcs/docs/PERCEPTION_INTEGRATION.md`.
-- **Root `CLAUDE.md` rows for this module:** `docs/ROOT_CLAUDE_ROWS.md`, delivered for
-  the owner to apply (REQUESTS R-4).
+- **This module in the superproject:** the root `.claude/CLAUDE.md` (module table, §4.3
+  rows, D7) and the skills `module-gates` / `file-interfaces`, updated 2026-10-16
+  (REQUESTS R-4).

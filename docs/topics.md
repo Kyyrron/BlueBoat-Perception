@@ -36,9 +36,10 @@ Notes:
 - Existing topics, unchanged: `/sss_ai/seabed_analysis` (GCS, JSON) keeps publishing; its
   `detections` list is always empty since the GCS has no detector of its own (one
   detection source: Perception, 2026-10-16).
-- **Perception subscribes to nothing else.** In particular it never subscribes to
-  `/side_scan_sonar/*`, `/sss_processor/*`, `/blueboat/*`, or any ground-truth or sea-state
-  topic.
+- **Perception subscribes to nothing else**, with one exception decided on 2026-10-16:
+  dataset mode with a simulator world (§8). It never subscribes to the sonar
+  (`/side_scan_sonar/{port,starboard}/*`), `/sss_processor/*`, `/blueboat/*` or the sea
+  state.
 - **Image key:** `Image.header.frame_id` = `"<stream_id>/<image_id>"`. This is an image
   key, **not a TF frame**; no module reads TF (P2 §4.6). `Image.header.stamp` = the
   newest row time (`t_start_s`). The same key appears in the metadata envelope.
@@ -244,7 +245,7 @@ between a live record and the offline record of the same saved image.
 | `mode` | `normal` | `normal` or `dataset` (DESIGN §7) |
 | `dataset_name` | `""` | `<YYYY_MM_DD-HH_MM_SS>-<note>`; dataset mode (the launch file time-stamps a missing one) |
 | `dataset_path` | `""` | the dataset folder the launch file claimed (dataset mode); else the node claims `<root>/data/Dataset_data/<dataset_name>` |
-| `world_dir` | `""` | recorded in the dataset manifest (for the future offline labeller) |
+| `world_dir` | `""` | the simulator world folder: recorded in the dataset manifest; in dataset mode, the labels' objects and terrain (§8) |
 | `data_dir` | `""` | the run-data root `<root>` (else `$BLUEBOAT_DATA_DIR`, then the workspace, then the cwd); outputs under `<root>/data/` |
 | `record_log` | `true` | write `Perception_data/live/<stream_id>.jsonl` |
 | `join_timeout_s` | 5.0 | release incomplete image keys after this |
@@ -256,6 +257,9 @@ between a live record and the offline record of the same saved image.
 | `calibration` | `identity` | calibrator plug-in |
 | `sigma_h_m`, `sigma_heading_deg`, `sigma_nav_m` | 0.10, 2.0, 1.0 | **assumed** uncertainty parameters (§7) |
 | `footprint_row_step` | 16 | polygon decimation |
+| `label_source` | `auto` | dataset mode: `auto` = labels from the simulator's ground truth when `world_dir` is set (§8); `none` = empty labels |
+| `label_min_rows` | 3 | a label box needs this many picture rows |
+| `label_wait_s` | 3.0 | a picture waits at most this long for its ground truth before it is written |
 | `topic_image`, `topic_png`, `topic_metadata`, `topic_detections`, `topic_records`, `topic_status` | §1 | topic names |
 
 ## 7. What the metadata does not provide (missing for Belief or labels)
@@ -268,5 +272,47 @@ between a live record and the offline record of the same saved image.
 | Full attitude in `/blueboat/odom` (real) | the ping quaternion is yaw-only on the real boat; the GCS uses `/mavros/imu/data` instead | handled separately by you (2026-10-16) |
 | GPS lat/lon per row | records are in local ENU; georeferencing to lat/lon is the GCS anchor's job | later, if Belief needs absolute positions |
 | Object height | grazing angle and range assume a flat floor (R6) | inherent to single-beam SSS |
-| Ground-truth labels | dataset labels empty | a future offline labeller over the dataset's `ground_truth_bag/` |
+| Ground-truth labels for **real** data | real datasets have empty labels | an annotation label source (simulated datasets are labelled, §8) |
 | Images produced while not recording | exist only live; offline replay covers recorded images only | by design (NC #9) |
+
+## 8. Dataset mode in a simulator world: ground truth for the labels (2026-10-16)
+
+By the owner's decision, the node reads the simulator's ground truth **only** in
+`mode:=dataset` with a `world_dir`, and only for the dataset labels. The detections, the
+records and the status are computed without it.
+
+| Topic | Type | QoS (reader) | Used for |
+|---|---|---|---|
+| `/side_scan_sonar/ground_truth/sensor` | `std_msgs/String` (JSON, every ping cycle) | RELIABLE, KEEP_LAST 200, VOLATILE (the simulator publishes default 10) | the transducer pose each side was rendered from, per device `ping_number` |
+| `/side_scan_sonar/ground_truth/contacts` | `std_msgs/String` (JSON, cycles with contacts) | same | which objects a ping saw, `visible`, `ghost`/`via`, the mask-measured `shadow_bins` |
+
+Schemas: BlueBoat-SSS-Sim `docs/topics.md` §5 and its sensor row.
+
+**Label files.**
+- `labels/<stem>.txt`: one YOLO line `class cx cy w h` per box (normalised by the
+  picture's W × H); an empty file = no object.
+- One box per object, side and contiguous run of rows: the object's highlight and its
+  acoustic shadow (DESIGN §7).
+- Classes: `data.yaml`, from `core/data/yolo_classes_v1.json`, the 29 World Builder
+  classes in `CATALOG` order, append-only. A world's type not in it is appended after
+  them.
+
+**Sidecar `images/<stem>.json` → `perception.labels`.**
+- Per image: `{source: "sim_ground_truth/1", boxes: [...], ground_truth_coverage,
+  source_pings{needed, found}, device_bin_m, skipped{ghost, wall, invisible,
+  unknown_object, unknown_class, outside_beam}, boxes_below_min_rows}`.
+- Per box:
+  - `object_id`, `type`, `class_id`, `side`;
+  - `box_px{r0, r1, c0, c1}` (inclusive) and `yolo`;
+  - `highlight_cols`, `shadow_cols`;
+  - `rows`, `pings`, `ping_range`;
+  - `truncated_top` / `truncated_bottom` (the object goes on beyond the picture),
+    `clipped_far_range`;
+  - `slant_m`, `ground_m`, `dz_m`, `shadow_m`, `aspect_deg` (object yaw relative to the
+    look, 0–180°);
+  - `object{x, y, yaw, length, width, height}`.
+
+**Manifest.** `label_source`, `label_source_info` (world objects file and SHA-256,
+terrain file, class map, parameters) and `labels`: images, images with objects, boxes,
+`by_class`, truncated boxes, boxes below the row minimum, images with incomplete
+ground truth, and the skip counts.

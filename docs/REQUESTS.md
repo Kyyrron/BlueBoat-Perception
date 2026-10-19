@@ -47,21 +47,25 @@ Until then, intensity-domain families must not be run on Perception datasets.
 
 ## R-4 Superproject — root `CLAUDE.md` rows (Phase 5)
 
-The interface-table rows, the module table entry, the build-order line and the
-`module-gates` entry for BlueBoat-Perception are delivered in Phase 5, for you to apply.
+**Status 2026-10-16: applied**, by your order ("just do it yourself"), directly in the
+superproject `.claude/CLAUDE.md` (§1 diagram, module table and deployment list, §2 layout
+and build order, §3 the MCS order of 2026-10-16, §4.1 / §4.3 / §4.4 / §4.5 rows, §6 D7, §7
+table and CLAUDE.md map) and in the skills `module-gates` (a BlueBoat-Perception row; the SSS
+and MCS counts) and `file-interfaces` (Perception record logs and datasets; the seabed-image
+detector input; the stale 2/98 stretch statement).
 
-Also found while reading:
-- the root `CLAUDE.md` §4.3 "Transducer lateral offset — disagreement" row (processor 0.0
-  vs sim 0.20) is stale: the processor has used 0.285 since SSS `994a74b`, and the
-  simulator's `config/default_sonar.yaml:36` has `mount_y_abs_m: 0.285`;
-- §4.3 calls the `/sss_ai/seabed_analysis` payload "schema 1". It follows the picture
-  metadata: 4 until 2026-10-16, 5 since. Its `detections` are now always `[]`; the
-  detections are on `/sss_ai/detections` from Perception;
-- the §4.3 `/sss_ai/detections` row says "*(none)* → GCS, placeholder": the producer is
-  now BlueBoat-Perception;
-- the §4.1 `/blueboat/odom` row's yaw-only real attitude: the GCS now takes attitude from
-  `/mavros/imu/data` instead (Q8);
-- `project_synthesis.md` §13's "Bhandari" (REFERENCES, discrepancies).
+Corrected on the way (found while reading):
+- the §4.3 "Transducer lateral offset — disagreement" row (processor 0.0 vs sim 0.20): both
+  are 0.285 (processor since SSS `994a74b`; simulator `config/default_sonar.yaml:36`). The
+  simulator's own `TODO.md` [P1] still describes the old disagreement; it is not edited
+  from this work;
+- §4.3's "schema 1" for `/sss_ai/seabed_analysis`: the picture metadata's schema, 5 since
+  2026-10-16, with `detections` always `[]`;
+- the §4.3 `/sss_ai/detections` "*(none)* → GCS, placeholder" row: produced by
+  BlueBoat-Perception.
+
+Still open, not a row of this module: `project_synthesis.md` §13's "Bhandari" (REFERENCES,
+discrepancies), for you to judge.
 
 ## Coordination note — BlueBoat-MCS launch dialog
 

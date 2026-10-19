@@ -1,7 +1,8 @@
 """blueboat-perception-offline -- the live pipeline over a recorded session.
 
     blueboat-perception-offline SESSION [--out DIR] [--data-dir ROOT]
-                                [--dataset NAME] [--compare LIVE.jsonl ...]
+                                [--dataset NAME [--world DIR --ground-truth-bag BAG]]
+                                [--compare LIVE.jsonl ...]
 
 SESSION is a GCS recording session, a merged session, a "Save pictures"
 folder or a ``seabed_images/`` folder. The same ``core.Pipeline`` the node
@@ -14,7 +15,11 @@ folder (default ``<root>/data/Perception_data/offline/<session>/``,
 * ``summary.json`` -- counts, configuration, input.
 
 ``--dataset NAME`` also writes a dataset (``<root>/data/Dataset_data/NAME``)
-from the session's images. ``--compare`` checks the records against a live
+from the session's images. With ``--world`` (the simulator world folder) and
+``--ground-truth-bag`` (a dataset-mode run's ``ground_truth_bag/``), its labels
+are made from the simulator's ground truth exactly as the live node makes them
+(``core/sim_labels.py``); rosbag2_py is needed for that option only.
+``--compare`` checks the records against a live
 record log (``Perception_data/live/<stream_id>.jsonl``) -- equal means
 byte-equal canonical JSON once ``provenance`` and ``source`` are removed.
 The session is opened read-only, and no output may sit inside it (CM-7).
@@ -36,6 +41,33 @@ from ..core.dataset import DatasetWriter
 from ..core.pipeline import Pipeline, PipelineConfig
 from ..core.records import canonical_json, comparable_json, read_jsonl
 from ..core.session import images_dir, iter_session, session_name
+
+
+def read_ground_truth_bag(bag: Path):
+    """Every message of a dataset's archival ground-truth bag, as the dicts the
+    simulator published. ROS (rosbag2_py, rclpy, std_msgs) is imported here
+    only, so the rest of the CLI runs without it."""
+    import rosbag2_py
+    from rclpy.serialization import deserialize_message
+    from std_msgs.msg import String
+    reader = rosbag2_py.SequentialReader()
+    reader.open(rosbag2_py.StorageOptions(uri=str(bag), storage_id=""),
+                rosbag2_py.ConverterOptions("", ""))
+    while reader.has_next():
+        _topic, data, _t = reader.read_next()
+        yield json.loads(deserialize_message(data, String).data)
+
+
+def ground_truth_labels(world_dir: Path, bag: Path, min_rows: int = 3):
+    """The live node's label source, fed from the recorded bag."""
+    from ..core.sim_labels import GroundTruthBuffer, SimGroundTruthLabelSource, load_world
+    buffer = GroundTruthBuffer(horizon_s=None)
+    for doc in read_ground_truth_bag(bag):
+        if "sensors" in doc:
+            buffer.add_sensor(doc)
+        elif "contacts" in doc:
+            buffer.add_contacts(doc)
+    return SimGroundTruthLabelSource(load_world(str(world_dir)), buffer, min_rows=min_rows)
 
 
 def run_session(session: Path, pipeline: Pipeline,
@@ -76,6 +108,12 @@ def main(argv=None) -> int:
                     help="output folder (default <root>/data/Perception_data/offline/<session>)")
     ap.add_argument("--data-dir", default="", help="data root override (as the node's data_dir)")
     ap.add_argument("--dataset", default="", help="also write a dataset of this name")
+    ap.add_argument("--world", type=Path, default=None,
+                    help="simulator world folder (labels from ground truth; with "
+                         "--ground-truth-bag)")
+    ap.add_argument("--ground-truth-bag", type=Path, default=None,
+                    help="a dataset-mode run's ground_truth_bag/ (with --world)")
+    ap.add_argument("--label-min-rows", type=int, default=3)
     ap.add_argument("--compare", type=Path, nargs="*", default=[],
                     help="live record log(s) to compare against")
     ap.add_argument("--detector", default="dummy_center")
@@ -111,12 +149,25 @@ def main(argv=None) -> int:
                                        detector_input_mapping=args.detector_input_mapping,
                                        near_range_mask_m=args.near_range_mask_m,
                                        turn_window_s=args.turn_window_s))
+    if (args.world is None) != (args.ground_truth_bag is None) or \
+            (args.world is not None and not args.dataset):
+        print("--world and --ground-truth-bag go together, with --dataset", file=sys.stderr)
+        return 2
+    labels = None
+    if args.world is not None:
+        labels = ground_truth_labels(args.world.expanduser().resolve(),
+                                     args.ground_truth_bag.expanduser().resolve(),
+                                     args.label_min_rows)
     dataset = None
     if args.dataset:
         dataset = DatasetWriter.create(root, args.dataset, mode="offline",
+                                       world_dir=str(args.world or ""),
                                        config={"pipeline": pipeline.config.to_json(),
-                                               "session": str(src)},
-                                       forbidden_roots=[tree],
+                                               "session": str(src),
+                                               "ground_truth_bag": (
+                                                   str(args.ground_truth_bag)
+                                                   if args.ground_truth_bag else None)},
+                                       forbidden_roots=[tree], label_source=labels,
                                        detector_input=pipeline.detector_input_info())
     t0 = time.monotonic()
     records = run_session(session, pipeline, dataset)

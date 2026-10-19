@@ -151,3 +151,35 @@ def test_the_identity_baseline_keeps_the_display_png_as_training_image(tmp_path)
     assert (w.dir / f"images/{stem}.png").read_bytes() == (w.dir / f"display/{stem}.png").read_bytes()
     side = json.loads((w.dir / f"images/{stem}.json").read_text())
     assert "intensity_mapping" not in side                     # power transfer: R-3 gap
+
+
+def test_a_ground_truth_label_source_fills_labels_data_yaml_and_sidecars(tmp_path):
+    import test_sim_labels as T
+    from blueboat_perception.core import sim_labels as SL
+    o = T.obj()
+    buf = SL.GroundTruthBuffer()
+    T.feed(buf, [o])
+    src = T.source([o], buf)
+    w = DatasetWriter.create(tmp_path, "labelled", world_dir="/w/x", label_source=src)
+    empty = T.picture(first_ping=5000, image_id=1, png=True)   # no ground truth for it
+    stem = w.write(T.picture(png=True))
+    stem_empty = w.write(empty)
+    w.close()
+    lines = (w.dir / "labels" / f"{stem}.txt").read_text().splitlines()
+    assert len(lines) == 1
+    cid, *box = lines[0].split()
+    assert int(cid) == SL.load_class_map().index("concrete_block")
+    assert all(0.0 < float(v) <= 1.0 for v in box)
+    assert (w.dir / "labels" / f"{stem_empty}.txt").read_text() == ""
+    data = (w.dir / "data.yaml").read_text()
+    assert "train: images" in data and "val: images" in data and "nc: 29" in data
+    assert "  0: tire_car" in data and "  28: shopping_trolley" in data
+    side = json.loads((w.dir / "images" / f"{stem}.json").read_text())
+    (b,) = side["perception"]["labels"]["boxes"]
+    assert b["type"] == "concrete_block" and b["object_id"] == 7
+    assert side["perception"]["labels"]["ground_truth_coverage"] == 1.0
+    m = json.loads((w.dir / "manifest.json").read_text())
+    assert m["label_source"] == "sim_ground_truth/1"
+    assert m["labels"]["boxes"] == 1 and m["labels"]["images"] == 2
+    assert m["labels"]["images_incomplete_coverage"] == 1
+    assert m["label_source_info"]["objects"] == 1

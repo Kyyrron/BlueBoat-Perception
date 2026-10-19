@@ -27,15 +27,15 @@ images + metadata  →  [preprocess: fixed_gray]  →  detector: dummy  →  [ca
 |---|---|
 | ROS-free core; thin ROS node; offline CLI over recorded sessions | YOLO detector loading a model file (`detectors/yolo.py`) |
 | Dummy detector reproducing the GCS dummy, labelled dummy everywhere | Confidence calibration on held-out data (temperature / Platt, R11) |
-| Detections on `/sss_ai/detections` (existing GCS slot) + per-image records | Labels from simulator ground truth (offline labeller) |
-| Dataset-creation **mode** and writer (structure; empty labels hook) | Training (out of scope here) |
+| Detections on `/sss_ai/detections` (existing GCS slot) + per-image records | Labels from real imagery (an annotation source) |
+| Dataset-creation **mode** and writer, with YOLO labels from simulator ground truth (2026-10-16, §7) | Training (out of scope here) |
 | Identity preprocessing stage + the study | Any image-changing preprocessing, after your Phase 4 decision |
 
 **Not Perception's job:**
 - reading pings (raw or processed);
 - forming images (SSS keeps image formation, the PNG, the display model and the
   windowing);
-- reading simulator ground truth online;
+- reading simulator ground truth for anything but dataset labels (2026-10-16, §7);
 - writing into recording sessions (CM-7).
 
 ## 2. Decisions (owner's answers, 2026-10-15)
@@ -56,7 +56,7 @@ Phase 2 answers (2026-10-16):
 | # | Decision | Consequence here |
 |---|---|---|
 | 1 | The SSS profile-miss fallback fix, separate and labelled | SSS `PERCEPTION_INTEGRATION.md` §5 |
-| 2 | Dataset mode also records the simulator ground truth (an archival bag); Perception never reads it | §7, `launch/perception_launch.py` |
+| 2 | Dataset mode also records the simulator ground truth (an archival bag). **Revised 2026-10-16:** in dataset mode in a world, the node reads it for the labels only | §7, `launch/perception_launch.py`, `core/sim_labels.py` |
 | 3 | **One detection source: Perception.** The station's own dummy and any source choice are removed | §3, §8; the dummy (§4.4) is the station's former one, reproduced exactly |
 | 4 | MCS changes in this session, additions only, compatible with a later "Replanner mode" row | §8 |
 | 5 | Control's live-path-update work must not be affected; Control not edited | it touches nothing Perception uses |
@@ -309,18 +309,27 @@ cwd. Normally `~/ros2_ws/data/` (file-interfaces skill). Names are claimed exclu
     `record_log`, `join_timeout_s`, `detector` (dummy), `preprocess` (fixed_gray | identity),
     `detector_input_mapping` (fixed_gray_v1), `near_range_mask_m` (0.0), `turn_window_s` (1.0),
     `calibration` (identity), `sigma_h_m`, `sigma_heading_deg`, `sigma_nav_m`,
-    `footprint_row_step`.
-  - **The node never subscribes to `/side_scan_sonar/ground_truth/*` or
-    `/sim/sea_state/*`.** A test greps the sources (rule: online code never reads sim
-    ground truth).
+    `footprint_row_step`, `label_source` (auto | none), `label_min_rows` (3),
+    `label_wait_s` (3.0).
+  - **Ground truth only for the dataset labels (owner's decision, 2026-10-16).** The
+    node subscribes to `/side_scan_sonar/ground_truth/{contacts,sensor}` only in
+    `mode:=dataset` with a `world_dir`, from `_open_labels`, through
+    `ros/ground_truth.py` (the one online file naming them). Their data reach only the
+    dataset label source; the pipeline never sees them. It never subscribes to
+    `/sim/sea_state/*`. Tests: the source sweep, the AST check of where the
+    subscription is made, the detection path's imports, records identical with and
+    without labels.
   - SIGINT flushes the record log and the dataset manifest.
 - **Launch** `launch/perception_launch.py`:
   - arguments `mode`, `dataset_name`, `world_dir`, `data_dir`;
   - in `mode:=dataset` only, it also starts the archival ground-truth recorder (§7);
   - `use_sim_time` is not used: the node uses the image's own stamps for data and the wall
     clock for latency only.
-- **Offline CLI** `blueboat-perception-offline SESSION [--out DIR] [--dataset NAME]`:
+- **Offline CLI** `blueboat-perception-offline SESSION [--out DIR] [--dataset NAME
+  [--world DIR --ground-truth-bag BAG]]`:
   - the same `Pipeline` over `core/session.py`;
+  - with `--world` and `--ground-truth-bag`, the dataset is labelled from a recorded
+    ground-truth bag by the same label source as live;
   - writes `records.jsonl` + `detections.json` + `summary.json` to
     `<data>/Perception_data/offline/<session>/` by default;
   - refuses an `--out` inside the session tree (CM-7).
@@ -335,28 +344,58 @@ cwd. Normally `~/ros2_ws/data/` (file-interfaces skill). Names are claimed exclu
 <name>/
   manifest.json          blueboat_perception/dataset_manifest/1: versions, mode, world_dir, stream ids,
                          image count, label source, created (UTC), the run's config
-  data.yaml              Ultralytics: names: {} until a label source defines classes
+  data.yaml              Ultralytics: train/val placeholders (the whole set) + names (29 World Builder
+                         classes, yolo_classes_v1); names: {} without a label source
   images/<stem>.png      the DETECTOR INPUT (the configured preprocessor's `gray`; stem = <stream_id>_<image_id:05d>)
   display/<stem>.png     the GCS display PNG, preserved verbatim
   images/<stem>.json     sidecar: Aug-Studio AcquisitionMeta fields (layout "dual", altitude_m, slant_range_m,
                          res_across_m, res_along_m, speed_mps, heading_deg, prf_hz, depth_m, timestamp)
                          + "gcs_metadata": the full seabed metadata (ignored by the Aug Studio, extra="ignore")
-  labels/<stem>.txt      empty: NullLabelSource
+                         + "perception.labels": every box's detail (below)
+  labels/<stem>.txt      YOLO: one line per object (highlight + shadow box); empty = no object
   raw/<stem>_db.npz      raw float32 dB (lossless)
   ground_truth_bag/      sim only: archival `ros2 bag record /side_scan_sonar/ground_truth/{contacts,sensor}`
 ```
 
-- **Labels hook:** `LabelSource.labels_for(img) -> list[YoloBox]`. The default is
-  `NullLabelSource` (no labels). A future `SimGroundTruthLabelSource` works **offline**
-  from `ground_truth_bag/` + `world_dir/metadata.yaml`, joined through the Q8 device ping
-  numbers. Whether the recorded ground truth suffices for boxes is that labeller's
-  question (the simulator is not modified in this work).
+- **Labels (2026-10-16): `core/sim_labels.py` `SimGroundTruthLabelSource`.** It is used
+  in dataset mode with a simulator world (else `NullLabelSource`, empty labels).
+  - **Inputs:**
+    - the world folder's objects (`metadata.yaml`, else `scene_manifest.yaml`) and its
+      terrain (`depth.npz`, else `scene.npz` read around each object);
+    - the simulator's per-ping ground truth: the transducer pose each side was rendered
+      from (`.../sensor`), and the renderer's contacts (`.../contacts`: which objects a
+      ping saw, visibility, the shadow length off its visibility mask).
+  - **Join:** each picture row → its source ping `(side, device ping_number)`, the
+    nearest stamp resolving counter restarts.
+  - **Per ping, the renderer's own geometry:**
+    - the object's oriented footprint clipped to the beam strip `|along| <= min(3σ,
+      R_max·θ/2)`, σ = R·θ/2.355, θ = 0.5°;
+    - highlight from the nearest top point to the far top edge;
+    - shadow end = the longer of the flat-floor tip and the renderer's mask length;
+    - ±2 bins for the pulse envelope;
+    - device bins `L/N` (the GCS pitch is `L/(N − 1)`).
+  - **Box:** one per object, side and contiguous row run = the union over its rows,
+    kept with ≥ `label_min_rows` rows.
+  - **Not labelled (counted in the manifest):** multipath ghosts, wall echoes, and
+    pings where the object is not visible or outside the beam.
+  - **Classes:** frozen in `core/data/yolo_classes_v1.json`, the World Builder `CATALOG`
+    order (29), append-only, test-checked against the simulator's source.
+  - **Checked against the simulator's renderer** (`LIVE_CHECKS.md` check 6): noise-free
+    renders of the recorded pings, with and without the objects. Over 178 pings of a
+    live run, the label interval encloses the object's influence at the near edge in
+    87 % (median slack 4 bins) and at the far edge in 94 % (median 8 bins). It misses
+    the object in 1 ping where the render shows it. Live labels equal the offline
+    re-labelling from the bag byte for byte (20 / 20).
+- **Timing:** a picture waits (in order) until its rows' ground truth and the next ping
+  have arrived (`ready`), at most `label_wait_s`. `shutdown()` writes what is waiting,
+  and the sidecar records `ground_truth_coverage`.
 - **The ground-truth recorder** (answer 2) is a separate `ros2 bag record -o
   <dataset>/ground_truth_bag --topics /side_scan_sonar/ground_truth/{contacts,sensor}`
   process started by `launch/perception_launch.py` in `mode:=dataset` when `world_dir` is
   set (a simulated world run). The launch file claims the dataset folder and passes it to
-  the node (`dataset_path`), so both write into the same folder. Archival only: the
-  Perception node never reads ground truth (test-enforced).
+  the node (`dataset_path`), so both write into the same folder. The bag is the archival
+  copy: `blueboat-perception-offline --world --ground-truth-bag` re-labels from it, and
+  equals the live labels (check 6).
 - **Intensity mapping (2026-10-16).** Under `fixed_gray` the training image is a linear dB
   window after the fixed range normalisation: the sidecar declares `intensity_mapping:
   log` with `log_range_db = hi − lo`, which the Aug Studio's `log` inversion matches
@@ -455,7 +494,7 @@ Corpus tests skip cleanly without `$BLUEBOAT_DATA_DIR` data.
 | CM-10 | Input is the boat-relative waterfall tile, never a mosaic crop |
 | CM-11 | The dataset mode writes sim datasets; their use is the E7 gap experiment, and the headline detector stays real-trained (P1 §7.6 ⚠) |
 | CM-14 | Offline CLI over recorded sessions gives the same records as live |
-| "Online code never reads sim ground truth" | The node subscribes to none; the archival recorder is a separate process; test-enforced |
+| "Online code never reads sim ground truth" (revised 2026-10-16: except the dataset labels) | Only `ros/ground_truth.py` names the topics, subscribed from the dataset set-up only; the detection path never imports the labeller; records identical with or without labels; test-enforced |
 
 ## 13. Alternatives considered and rejected
 - **File spool + notification** (GCS writes npz/json per image, Perception watches):
@@ -470,8 +509,12 @@ Corpus tests skip cleanly without `$BLUEBOAT_DATA_DIR` data.
 - **Base64 pixels inside JSON:** ×1.33 size plus encode cost, and opaque.
 - **Re-implementing the display model in Perception** to get the PNG: two implementations
   that can drift; the PNG is transported instead.
-- **Perception subscribing to ground truth for labels:** forbidden online. Labels come
-  offline from the archival bag.
+- **Labelling after the run from the archival bag only** (the rule as first written):
+  rejected on 2026-10-16 by your decision. MCS stops the launch with a SIGINT ladder, so
+  a post-run labeller could be killed or race the node's last images. The live label
+  source plus the bag's offline re-labelling give the same labels (check 6).
+- **A separate labeller process** beside the node: rejected for the same race on the
+  last images at shutdown.
 
 ## 14. Open items carried to `.claude/TODO.md`
 - Phase 4 preprocessing decision (STUDY §6).
@@ -479,8 +522,6 @@ Corpus tests skip cleanly without `$BLUEBOAT_DATA_DIR` data.
   (k ≥ 16) is in place, a stream-aware uid is not (uids repeat across GCS streams, as the
   station's did — SSS `TODO.md`).
 - Calibration data split and calibrator fit (R11).
-- Offline sim labeller from the dataset's `ground_truth_bag/` (the simulator is not
-  modified in this work; the R-2 request was withdrawn).
 - Aug Studio intensity-mapping gap (REQUESTS R-3).
 - Measure `σ_nav`, `σ_ψ`, `σ_h` against USBL.
 - Typed messages once Belief exists.

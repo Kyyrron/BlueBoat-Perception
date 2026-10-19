@@ -48,7 +48,8 @@ the module's `.claude/CLAUDE.md`; the detector-input decisions in
   - 6.6 roll correction behind a disabled boundary (raises), roll kept in the records;
   - 6.7 geometric correction, despeckling, HE, Retinex deferred (raise).
 - [x] **Phase 5** — handover (2026-10-16): `.claude/CLAUDE.md`, this file, SSS `.claude`
-      updates, `docs/ROOT_CLAUDE_ROWS.md` for you to apply, the report.
+      updates, the root `CLAUDE.md` and the `module-gates` / `file-interfaces` skills (applied
+      by your order), the report.
 
 ## Open technical items
 - [ ] **The first image of every stream arrives ~3.06 s late** (one part; all three runs).
@@ -74,8 +75,29 @@ the module's `.claude/CLAUDE.md`; the detector-input decisions in
       station's own did; a stream-aware uid needs a GCS listener + contract change.
 - [ ] Calibration: held-out split per domain, temperature/Platt, reliability + ECE
       (DESIGN §4.5, R11).
-- [ ] Offline sim labeller over a dataset's `ground_truth_bag/` (the simulator is not
-      modified in this work).
+- [x] **Dataset labels from the simulator's ground truth** (2026-10-16, your order and
+      decision: read in the node, dataset mode only). `core/sim_labels.py`,
+      `ros/ground_truth.py`, the offline `--world --ground-truth-bag` re-labelling,
+      `tools/draw_labels.py`. Checked against noise-free renders of recorded pings
+      (`LIVE_CHECKS.md` check 6).
+- [ ] **Label geometry approximations** (measured, check 6):
+  - rested or tilted objects use their `length × width` footprint at `yaw`, ignoring
+    roll/pitch;
+  - round objects (tyres, drums) use the bounding rectangle, a little wide at 45°;
+  - the far edge runs a median 8 bins (up to ~27 cm) past the rendered shadow: the
+    conservative max of the flat-floor tip and the renderer's mask length.
+- [ ] **Faint objects get labels the picture barely shows.** Ropes, chains and small
+      plastic items at long range: in 67 of the 245 pings where the geometry places a
+      single object (live run, check 6), the noise-free render changes by < 1 dB. A visibility rule (e.g. the renderer's
+      contrast) would need the simulator to publish it; today the sidecar's size and
+      type allow filtering.
+- [ ] **SSS vs simulator bin convention.** The GCS pitch is `L/(N − 1)`
+      (`models/sonar.py:186`, sample 0 at the start, the last at the end). The
+      simulator renders bin k over `[k·L/N, (k + 1)·L/N)`. That is 0.08 %, under one bin
+      at full range. The labels use the simulator's, and the GCS georeferencing carries
+      the 0.08 %.
+- [ ] `data.yaml` train/val placeholders are untested with Ultralytics (not installed
+      here).
 - [ ] Aug Studio intensity mapping for `identity` datasets only (REQUESTS R-3; `fixed_gray`
       datasets declare `log`, resolved).
 - [ ] Measure σ_nav, σ_ψ, σ_h against USBL / RTK. They are assumptions today

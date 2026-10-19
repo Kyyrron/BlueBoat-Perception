@@ -127,3 +127,66 @@ What to look at:
   itself, so the Base Station link carries none of them;
 - the real IMU's roll / pitch / yaw rate in the pictures' `rows_data`; `attitude_age_s`
   there is the age of the sample the GCS attached.
+
+## Check 6 — automatic YOLO labels in dataset mode (2026-10-16)
+
+Run 5: the Phase 3 setup (the simulator's default world, 29 objects, the lawnmower),
+launched through MCS's `LaunchManager` in Dataset creation. The GCS ran START at 60 s,
+Record at 65 s and STOP at 190 s. Perception ran the installed build with
+`label_source: auto`.
+
+| | Result |
+|---|---|
+| Dataset | 21 images, 21 label files, `data.yaml` with the 29 World Builder classes (`nc: 29`), the archival `ground_truth_bag/` closed (`metadata.yaml` present) |
+| Labels | **41 boxes over 16 images** (5 background images); 9 classes: bottle_plastic 4, can 9, concrete_block 5, cylinder_metal 2, debris 4, pipe_pvc 5, rope 6, tent_weight 2, tire_car 4; 8 truncated at a picture edge; 0 ghosts or walls in this world |
+| Ground-truth coverage | complete for 20 images. The 21st (the stream's last, after STOP) waited the 3 s for a next ping that never came, and was written with what had arrived |
+| **Offline = live, labels** | the CLI over the GCS session with `--world --ground-truth-bag`: **20 / 20 label files byte-identical**, 20 / 20 sidecar label details identical, 20 / 20 training images identical. The 21st image is not in the session (made after Record OFF) |
+| Offline = live, records | 20 / 20 identical (`--compare`): the labels do not touch the records |
+| Aug Studio | its `YoloDataset` reads 21 items, 41 boxes, the class names, and `intensity_mapping: log` (48.31 dB) |
+
+**Accuracy against the simulator's own renderer.** For every 3rd recorded ping with one
+visible object, the oracle renders the ping noise-free from the recorded boat pose, with
+the world and with its object-free twin (same seed, objects not placed: identical
+terrain, checked). The bins where the object changes the render by more than 1 dB are
+its true highlight and shadow in that ping. They are compared with
+`sim_labels.ping_object_bins`. The scripts are in the session scratchpad
+(`oracle/diff_check2.py`) and are not shipped.
+
+| | Run 5 (live) | Run 4 (Phase 3 bag) |
+|---|---|---|
+| Pings compared | 178 | 103 |
+| The render shows the object, the label does not | **1** | 0 |
+| The label claims the object, the render changes < 1 dB | 67 (faint objects: ropes, chains, plastics) | 55 |
+| Near edge encloses the object | 87 % (median slack 4 bins) | 89 % (5) |
+| Far edge (shadow end) encloses it | 94 % (median slack 8 bins) | 95 % (8) |
+
+Per class (run 5, median slack in bins at the near / far edge):
+
+| Class | Near | Far | Far enclosed |
+|---|---|---|---|
+| concrete_block | 3 | 6 | 100 % |
+| pipe_pvc | 4 | 6.5 | 96 % |
+| tire_car | 5 | 10 | 100 % |
+| can | 1 | 16 | 100 % |
+| bottle_plastic | −2 | 15 | 100 % |
+| rope | 11 | 9 | 89 % |
+| chain | 8 | 10 | 78 % |
+| debris | 0 | 42.5 | 100 % |
+
+A bin is 16.7 mm. The far edge is deliberately the larger of the flat-floor shadow tip
+and the renderer's mask length. The mask alone would end 0–3 bins from the render, but
+enclose only 50–73 % of the shadows.
+
+**Found and fixed while checking.**
+- The first version took the contact's slant as the slant to the seabed. It runs to the
+  object's stamped top, and the near edge came out 10–25 bins too near on the 0.37 m
+  concrete blocks.
+- It sized every ping by the whole footprint, which spread a 4 m rope over 280 bins in
+  every row.
+- Both are now the renderer's own geometry: the footprint clipped to the beam strip, and
+  the seabed from the terrain.
+
+**Visual check** (`tools/draw_labels.py --crops`): tyres, concrete blocks, cans and
+pipes sit with their highlight in the green band and their shadow in the blue band.
+Ropes and chains get their correct bounding box, but are barely visible in the picture
+(see TODO).

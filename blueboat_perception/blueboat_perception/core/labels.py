@@ -1,11 +1,21 @@
 """Label sources for dataset mode.
 
-``LabelSource.labels_for(img) -> list[YoloBox]``. The default is
-:class:`NullLabelSource` (no labels): dataset mode writes images with
-**empty** label files. A future ground-truth labeller works **offline**
-from the dataset's archival ``ground_truth_bag/`` and the world folder,
-joined through the per-row device ping numbers -- never online
-(the Perception node does not read simulator ground truth).
+``LabelSource.labels_for(img) -> list[YoloBox]``. Two sources exist:
+
+- :class:`NullLabelSource` (no labels) — the default. Real data, or a dataset
+  with no simulator world.
+- ``sim_labels.SimGroundTruthLabelSource`` — dataset mode in a simulator world
+  (2026-10-16). Boxes come from the simulator's per-ping ground truth, joined
+  through each row's device ping numbers. The detection path never sees that
+  ground truth: only the dataset writer calls a label source.
+
+Optional methods a source may add, which the dataset writer uses when they are
+present:
+
+- ``detail_for(img) -> dict`` — per-box detail for the image sidecar;
+- ``ready(img) -> bool`` — whether the ground truth needed by the picture has
+  arrived (the node defers the write until it has);
+- ``info() -> dict``, ``stats() -> dict`` — for the manifest.
 """
 
 from __future__ import annotations

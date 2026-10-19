@@ -12,6 +12,12 @@ perception:
     detector_input_mapping: fixed_gray_v1
     near_range_mask_m: 0.0    # decision 6.5: 0.0 (off) or 0.75 (the GCS live nadir blank)
     turn_window_s: 1.0        # decision 6.2: yaw-rate smoothing for the turn flags
+    # Dataset mode in a simulator world (world_dir set): YOLO labels from the
+    # simulator's ground truth, highlight + shadow (core/sim_labels.py). The
+    # ground truth feeds the label writer only, never the detections or records.
+    label_source: auto        # auto = simulator ground truth when a world is given; none = empty labels
+    label_min_rows: 3         # a box needs this many picture rows
+    label_wait_s: 3.0         # wait at most this long for a picture's ground truth
     calibration: identity
     # Localisation uncertainty (model geometric_v1) -- ASSUMED, not measured:
     sigma_h_m: 0.10

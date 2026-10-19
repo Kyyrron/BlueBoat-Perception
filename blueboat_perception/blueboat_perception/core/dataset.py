@@ -4,7 +4,8 @@ Layout (``<root>/data/Dataset_data/<name>/``, name from MCS
 ``<YYYY_MM_DD-HH_MM_SS>-<note>``, claimed exclusively, ``-2`` on a clash)::
 
     manifest.json        blueboat_perception/dataset_manifest/1
-    data.yaml            Ultralytics class names (``names: {}`` until a label source defines them)
+    data.yaml            Ultralytics: ``train``/``val`` placeholders and the
+                         class names of the label source (``names: {}`` without one)
     images/<stem>.png    the DETECTOR INPUT (decision 6.4, 2026-10-16): the image the
                          configured preprocessor gives the detector -- the fixed
                          ``fixed_gray`` mapping of the raw dB by default, or the GCS
@@ -14,11 +15,15 @@ Layout (``<root>/data/Dataset_data/<name>/``, name from MCS
                          the same OpenCV encoding of the same mono8 array)
     images/<stem>.json   sidecar: SSS-Dataset-Aug-Studio ``AcquisitionMeta`` fields
                          + ``gcs_metadata`` (the full seabed metadata; the Aug Studio
-                         ignores unknown keys, ``extra="ignore"``)
-    labels/<stem>.txt    YOLO labels -- empty with ``NullLabelSource``
+                         ignores unknown keys, ``extra="ignore"``) + ``perception``
+                         (incl. ``labels``: every box's detail, when the source has one)
+    labels/<stem>.txt    YOLO labels, one per image (empty = no object): in a
+                         simulator world, highlight + shadow boxes from the
+                         simulator's ground truth (``sim_labels``); empty with
+                         ``NullLabelSource``
     raw/<stem>_db.npz    the raw float32 dB (lossless; the PNG is a display transfer)
     ground_truth_bag/    simulation only: the archival ``ros2 bag record`` the
-                         launch file starts (the node never reads it)
+                         launch file starts (the offline CLI re-labels from it)
 
 ``stem = <stream_id>_<image_id:05d>`` (file-name safe). Every file is
 created exclusively, never overwritten. Nothing is ever written inside a
@@ -211,9 +216,12 @@ class DatasetWriter:
                                                  "(gcs_metadata.pixel_convention)"}
         if record is not None:
             sidecar["perception"]["record_key"] = record.get("key")
+        lines = [b.line() for b in self.labels.labels_for(img)]
+        detail_for = getattr(self.labels, "detail_for", None)
+        if detail_for is not None:
+            sidecar["perception"]["labels"] = detail_for(img)
         self._write_new(self.dir / "images" / f"{stem}.json",
                         json.dumps(sidecar, indent=1, sort_keys=True, allow_nan=True))
-        lines = [b.line() for b in self.labels.labels_for(img)]
         self._write_new(self.dir / "labels" / f"{stem}.txt",
                         "".join(f"{ln}\n" for ln in lines))
         raw = self.dir / "raw" / f"{stem}_db.npz"
@@ -228,11 +236,16 @@ class DatasetWriter:
     # ---- dataset-level files -------------------------------------------------------
     def _data_yaml(self) -> str:
         names = self.labels.classes
-        body = "names: {}\n" if not names else "names:\n" + "".join(
-            f"  {k}: {v}\n" for k, v in sorted(names.items()))
-        return ("# BlueBoat-Perception dataset. No train/val split: split by session\n"
-                "# or site later, never by image (consecutive images overlap 50 %).\n"
-                + body)
+        head = ("# BlueBoat-Perception dataset. No train/val split: split by session\n"
+                "# or site later, never by image (consecutive images overlap 50 %).\n")
+        if not names:
+            return head + "names: {}\n"
+        return (head
+                + "# train/val (relative to this file's folder) point at the whole set\n"
+                + "# until you split it.\n"
+                + "train: images\nval: images\n"
+                + f"nc: {len(names)}\nnames:\n"
+                + "".join(f"  {k}: {v}\n" for k, v in sorted(names.items())))
 
     def manifest(self) -> Dict[str, Any]:
         return {"schema": MANIFEST_SCHEMA, "name": self.name,
@@ -242,6 +255,10 @@ class DatasetWriter:
                 "stream_ids": list(self.stream_ids), "image_count": self.count,
                 "skipped_no_png": self.skipped_no_png,
                 "label_source": self.labels.name,
+                "label_source_info": (self.labels.info() if hasattr(self.labels, "info")
+                                      else None),
+                "labels": (self.labels.stats() if hasattr(self.labels, "stats")
+                           else None),
                 "training_images": ("detector input" if self.detector_input
                                     else "GCS display PNG"),
                 "detector_input": self.detector_input,
