@@ -5,11 +5,14 @@
 - §2, the motion analysis;
 - §3, attitude availability;
 - §4, the candidate options;
-- §5, the data, with the Phase 4 measurements M1–M6;
-- §6, **the recommendation, awaiting your decision**.
+- §5, the data, with the Phase 4 measurements M1–M7;
+- §6, the owner's decisions on the recommendation (2026-10-16) and what was implemented.
 
-**No preprocessing that changes images is implemented**: Perception's stage ships as
-identity until you decide (§6).
+**Implemented (§6):** the default detector input is `fixed_gray` (`fixed_gray_v1`, a
+fixed mapping of the raw dB); `identity` (the GCS display PNG) stays one switch away as
+the baseline. The near-range mask and the turn flags are in, the originals are never
+modified, and roll correction, geometric correction, despeckling, histogram
+equalisation and Retinex are not implemented (requesting one raises).
 
 Sources: [`REFERENCES.md`](REFERENCES.md), pointers `[R# §…]` and `[P# §…]`.
 "Verified" means read in the code at the path given, in the tree as of 2026-10-15. Numbers
@@ -648,8 +651,10 @@ preprocessor, the default.
   invalid; the column at exactly the distance is kept; tested at both settings and at
   the boundary.
 - One setting is used live, offline and in dataset mode, and the record states it.
-- **[open]** No labelled data exists here (dataset labels are empty), so the number of
-  targets affected is unknown. The mask is not claimed to improve detection.
+- **[open]** No labelled **real** data exists here (real datasets still get empty
+  labels; simulated datasets are labelled from the simulator's ground truth since
+  2026-10-16, DESIGN §7), so the number of real targets affected is unknown. The mask is
+  not claimed to improve detection.
 
 **6.6 — Roll-related radiometric correction: investigated, not implemented.**
 - **What is already applied:**

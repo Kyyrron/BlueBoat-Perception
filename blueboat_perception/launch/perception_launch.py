@@ -11,8 +11,11 @@
   the node. When ``world_dir`` is set (a simulated personalized-world
   run) it also starts an **archival** ``ros2 bag record`` of the
   simulator ground truth into ``<dataset>/ground_truth_bag`` -- a separate
-  process for a future offline labeller; the Perception node never
-  subscribes to ground truth.
+  process, from which ``blueboat-perception-offline --world
+  --ground-truth-bag`` re-labels offline. In that same case the node
+  itself subscribes to the two ground-truth topics, for the dataset labels
+  only (``ros/ground_truth.py`` -> ``core/sim_labels.py``); detections and
+  records never see them.
 
 MCS starts this for Gazebo runs of a personalized world (the chosen
 session mode) and for every real-robot launch (normal).

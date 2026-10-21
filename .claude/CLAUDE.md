@@ -171,10 +171,13 @@ ros2 topic echo --once /sss_ai/perception/status std_msgs/msg/String \
 - The Aug Studio sidecar test needs pydantic. Run it with
   `SSS-Dataset-Aug-Studio/.venv/bin/python -m pytest tests/test_dataset.py`.
 
-## 6. Gates (2026-10-16)
-- **Perception:** 109 pass / 4 skip. The skips: 3 corpus folders without stored
-  detections, and the pydantic test on the system python. The class-map test reads the
-  simulator's source beside this module and skips without it.
+## 6. Gates (2026-10-16; Perception re-measured 2026-10-19)
+- **Perception:** 111 pass / 6 skip on 2026-10-19 (109 / 4 on 2026-10-16). The skips:
+  5 corpus folders without stored in-process detections, and the pydantic test on the
+  system python. The corpus count depends on what is on disk: offline exports and every
+  session recorded since 2026-10-16 (the GCS no longer runs a detector, so its images
+  store none) skip the dummy-reproduction test. The class-map test reads the simulator's
+  source beside this module and skips without it.
 - **SSS** (shares this module's contract): 353 pass / 50 skip, including the golden
   regression `tests/test_perception_golden.py` and `tests/test_perception_bridge.py`.
 - **MCS:** `smoke_test.py` PASSED, including `perception ok`; `ruff check .` clean.
