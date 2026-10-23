@@ -233,6 +233,95 @@ describe a per-angle energy normalisation by "Chang and colleagues [6,7,9]"; whe
 those references include this paper was not checked, so that description is R20's and is
 cited as R20's only. Provide the PDF if you want R22 itself used.
 
+**Tiled detection** (added 2026-10-23, read for the tiled YOLO adapter): R13, R23–R26,
+S1, S2.
+
+### R13 — Akyon, Altinuc & Temizel 2022 `[full; arXiv v5]`
+Akyon, F.C., Altinuc, S.O., Temizel, A. (2022). Slicing Aided Hyper Inference and
+Fine-tuning for Small Object Detection. arXiv:2202.06934v5 [cs.CV], 24 Oct 2022 (the
+paper states it was published at IEEE ICIP 2022 via its GitHub; not checked here).
+Read 2026-10-23 (dropped on 2026-10-15 as not accessed; now read in full).
+
+| Used | Where applied |
+|---|---|
+| §3, fig. 2: slicing in fine-tuning (patches extracted from the training images, together with the originals) and in inference (overlapping patches, independent forward passes) | `core/tiling.py` (design); DESIGN §4.4 |
+| §3: "as the patch sizes decrease, larger objects may not fit within a slice and the intersecting areas" | DESIGN §4.10 (wide highlight + shadow boxes; the merge comparison) |
+| §3: the overlapping predictions "are merged back into to original size using NMS ... boxes having higher IoU ratios than a predefined matching threshold Tm are matched"; §4: Tm = 0.5; **no merging (NMM) rule is described in the paper** | `core/merge.py` `merge_nms` (the paper's rule, threshold 0.5); the greedy merge is attributed to the SAHI *software* (S2), `[engineering]` |
+| §4, tables 1–2: 25 % patch overlap at inference raised small/medium AP and slightly lowered large-object AP (false positives from slices matching large boxes) on VisDrone / xView | DESIGN §4.10 (why the overlap is a compared parameter, stride 128 vs 64) |
+| Scope: aerial optical imagery, FCOS / VFNet / TOOD, patches **resized**. Nothing here is sonar; our tiles are never resized | DESIGN §4.10 caveat |
+
+### R23 — Yu et al. 2021 `[full]`
+Yu, Y., Zhao, J., Gong, Q., Huang, C., Zheng, G., Ma, J. (2021). Real-Time Underwater
+Maritime Object Detection in Side-Scan Sonar Images Based on Transformer-YOLOv5.
+*Remote Sensing* 13(18): 3555. doi:10.3390/rs13183555. Read from the publisher file server
+(mdpi-res.com) 2026-10-23.
+
+| Used | Where applied |
+|---|---|
+| §2.1.2, fig. 2: a sample spans the full swath width, height `d` = the detector's input (320) | DESIGN §4.10 (our picture height = the tile size, 256) |
+| §2.1.2 eq. 2, fig. 4: across-track **down-sampling** to square pixels (0.1 × 0.5 m → 0.1 × 0.1 m); §3.3.1: without it the shipwreck was missed | DESIGN §4.10 (the GCS's square rows already give square pixels; we never resize across track) |
+| §2.1.2, fig. 5; §3.3.1: `d × d` patches by a sliding window across track, adjacent patches sharing 40 % "to prevent the target from being divided into two parts" | `core/tiling.py` (stride ≤ half the tile) |
+| §3.3.2: the detections of all patches go through NMS in the picture's coordinates | `core/merge.py` `merge_nms` |
+| §3.1.1: dataset split 6:2:2 **by image** after mixing; augmentation includes rotation, zoom, translation | **Not followed**: we split by world (R12 §4, CM-11) and switch those augmentations off (`tools/train_yolo.py`) |
+| Scope: towed / hull systems at 100–150 kHz, shipwrecks and containers, 286 training images | caveat |
+
+### R24 — Yang et al. 2025 (SS-YOLO) `[full]`
+Yang, N., Li, G., Wang, S., Wei, Z., Ren, H., Zhang, X., Pei, Y. (2025). SS-YOLO: A
+Lightweight Deep Learning Model Focused on Side-Scan Sonar Target Detection. *J. Mar.
+Sci. Eng.* 13(1): 66. doi:10.3390/jmse13010066. Read 2026-10-23 (mdpi-res.com).
+
+| Used | Where applied |
+|---|---|
+| §2.1: part of the dataset collected from a USV (SS900F); the processed images were cropped to 640 × 640 around each target | DESIGN §4.10 (crop practice in USV SSS detection: target-centred crops, not a tiling rule) |
+| §2.2: random stratified split 80/15/5 **by image**; §4.2 table 2: trained from scratch at 960 × 960 | **Not followed** (split by world); context only |
+| §5: deployment on the USV is **future work** — the model was not run on the vessel | Citation discrepancy below |
+
+### R25 — Ünel, Özkalaycı & Çığla 2019 `[full]`
+Ünel, F.Ö., Özkalaycı, B.O., Çığla, C. (2019). The Power of Tiling for Small Object
+Detection. *CVPR Workshops 2019* (UAVision). openaccess.thecvf.com, read 2026-10-23.
+
+| Used | Where applied |
+|---|---|
+| §4.2: tiles used in **training** too, ground truth "arranged accordingly without change of object size"; overlap "to preserve the objects along the tile boundaries" (25 %); "the risk of loosing larger object annotations also increases" as tiles shrink | `tools/make_tile_dataset.py` (native-size tiles, rule B + (i)) |
+| §4.3: tile detections merged: when the intersection of duplicates exceeds 25 % the higher score is kept | DESIGN §4.10 (an intersection-based rule, like `greedy_nmm`'s IoS, between NMS and merging) |
+| Scope: MAV optical imagery, Pelee / SSD | caveat |
+
+### R26 — Xu, Ling, Xie, Zhang & Folkesson 2023 `[full; arXiv v1]`
+Xu, W., Ling, L., Xie, Y., Zhang, J., Folkesson, J. (2023). Evaluation of a Canonical
+Image Representation for Sidescan Sonar. arXiv:2304.09243v1 [cs.CV]. (The prompt's
+short title, "canonical sidescan representation", is this paper.)
+
+| Used | Where applied |
+|---|---|
+| §III.2, Algorithm 1: slant-range correction to equally spaced ground-range bins of an arbitrary resolution, starting at a 30° incidence angle, which removes the nadir zone | TODO (ground-range resampling: a later arm, not now) |
+| §IV.C, fig. 1: after the transformation a feature's width is consistent across range (112 → 78 px and 153 → 77 px for the same feature at two ranges) | TODO (what resampling would change: object size independent of range) |
+| §IV: evaluated on 60 patch pairs (patch similarity, SIFT / ORB matching), HUGIN AUV, **not on detection** | TODO caveat: an effect on a detector is untested |
+
+### S1 — Ultralytics (software documentation and source), v8.4.184
+Read 2026-10-23: docs.ultralytics.com `models/yolo11`, `models/yolo26`, `modes/train`,
+`usage/cfg`, `datasets/detect`, `yolov5/tutorials/tips_for_best_training_results`; source
+`ultralytics/cfg/default.yaml`, `cfg/datasets/coco8-grayscale.yaml`, `data/augment.py`,
+`models/yolo/detect/train.py`, `nn/tasks.py` (`load`), installed 8.4.184. Software
+behaviour, cited for what the code does, not as research evidence.
+
+| Used | Where applied |
+|---|---|
+| `default.yaml`: augmentation defaults (`hsv_s 0.7`, `hsv_v 0.4`, `translate 0.1`, `scale 0.5`, `fliplr 0.5`, `mosaic 1.0`), `conf` 0.25 predict / 0.001 val, `iou 0.7`, `max_det 300`, `seed`, `deterministic` | `tools/train_yolo.py` (every value set explicitly); adapter defaults |
+| `augment.py` `RandomPerspective.box_candidates`: after a crop or shift, a box keeping < 10 % of its area (or < 2 px) is dropped and the image kept | rule B + (i) (`make_tile_dataset.py`) |
+| Training tips page: "about 0-10 % background images to help reduce FPs"; "All instances of all classes in all images must be labeled. Partial labeling will not work." | `--empty-fraction 0.10`; the tension with (i) noted in DESIGN §7.1 |
+| `coco8-grayscale.yaml`: `channels: 1`; `detect/train.py`: the model is built with the dataset's channels; `tasks.py` `load`: a first convolution with another input-channel count is "filled from the source filters, summed for a single-channel model" | `data_gray1.yaml`; the 1- vs 3-channel arm |
+| `models/yolo26`: detection models `yolo26n…x.pt` at 640; prediction "default[s] to the one-to-many head", which "requir[es] NMS post-processing"; one-to-one (NMS-free) with `nms=False`; YOLO26s 48.6 mAP50-95 (COCO). `models/yolo11`: YOLO11s 640, 47.0 mAP50-95, 9.4 M parameters | adapter (in-tile NMS for both families); README |
+
+### S2 — SAHI (software), commit b5a153e
+`github.com/obss/sahi`, `sahi/postprocess/combine.py` (`GreedyNMMPostprocess`,
+`_apply_merge`), `_numpy_backend.py` (`greedy_nmm_from_matrix`), `utils.py`
+(`calculate_bbox_ios`, `get_merged_score` = max, `get_merged_bbox` = union). Read
+2026-10-23.
+
+| Used | Where applied |
+|---|---|
+| Greedy NMM: by descending score, each kept box collects the unassigned lower boxes whose metric (IoU or IoS) with it is ≥ the threshold, then absorbs them one by one, re-checking the match against the growing box; merged box = union, score = max | `core/merge.py` `merge_greedy_nmm` (reimplemented in numpy-free Python, no dependency) |
+
 ---
 
 ## Project documents (cited by section)
@@ -260,12 +349,19 @@ cited as R20's only. Provide the PDF if you want R22 itself used.
 | R3 | Cervenka, P., de Moustier, C. (1993). Sidescan sonar image processing techniques. *IEEE JOE* 18(2):108–122. doi:10.1109/48.219531 | [abstract] | IEEE paywall; the UNH record links only the DOI. |
 | R4 | Capus, C.G., et al. (2008). Data correction for visualisation and classification of sidescan SONAR imagery. *IET RSN* 2(3):155–169. doi:10.1049/iet-rsn:20070032 (DOI as printed in R1 §10.7) | [not accessed] | IET paywall. |
 | R5 | Chavez, P.S. Jr., et al. (2002). Processing, mosaicking and management of the Monterey Bay digital sidescan-sonar images. *Mar. Geol.* 181:305–315. doi:10.1016/S0025-3227(01)00273-0 | [abstract] | Elsevier paywall; the USGS record has no PDF. |
-| R13 | Akyön, F.C., et al. (2022). Slicing Aided Hyper Inference. | [not accessed] | Cited by the GCS for its 50 % tile overlap. Windowing is SSS's, not a Perception decision, so it is not needed here. |
+| ~~R13~~ | SAHI — **kept since 2026-10-23** (read in full, above). | | |
+| — | Sapkota, R., Cheppally, R.H., Sharda, A., Karkee, M. (2025–26). YOLO26: Key Architectural Enhancements and Performance Benchmarking for Real-Time Object Detection. arXiv:2509.25164v5 | [accessed, not read in full] | A **third-party** review and benchmark (Cornell / Kansas State), not Ultralytics' own paper. Every YOLO26 fact used here comes from the Ultralytics documentation (S1). Not used. |
+| — | "Efficient processing of side-scan sonar images and fast detection of sparse targets in large-scale images" (2025), doi:10.1080/17538947.2025.2510568 | [not accessed] | Taylor & Francis answers HTTP 403 here. Asked of the owner 2026-10-23; nothing rests on it. |
 | R16 | Chavez, P.S. Jr. (1986). Processing techniques for digital sonar images from GLORIA. *PE&RS* 52(8):1133–1145 | [not accessed] | The USGS record states no digital version. Anamorphosis is covered by R1 §4.5.2. |
 | R17 | Sheffer, T., Guterman, H. (2018). Geometrical correction of side-scan sonar images. *IEEE ICSEE*. doi:10.1109/ICSEE.2018.8646188 | [abstract] | IEEE paywall. |
 | R18 | Anstee, S. (1994). DSTO MRL-RR-1-94 | [not accessed] | No accessible copy (the sim's own docs record "abstract only"). |
 
 ## Citation discrepancies found in project documents
+
+- (2026-10-23) The task prompt calls arXiv:2509.25164 "the YOLO26 paper"; it is a
+  third-party review (above), not by Ultralytics.
+- (2026-10-23) SS-YOLO (R24) is described as a USV detector: part of its data was
+  collected from a USV, but running the model on the vessel is stated as future work (§5).
 
 - `project_synthesis.md` §13 lists "Sethuraman, Sheppard, Bhandari et al. (2024)". The paper
   (R12) has Bagoren, not Bhandari. The Aug Studio's `bibliography.bib` repeats the error.

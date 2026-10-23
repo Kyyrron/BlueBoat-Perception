@@ -40,9 +40,11 @@ from vision_msgs.msg import Detection2DArray
 from .. import __version__
 from ..core.dataroot import data_root, perception_dir, sss_data_dir
 from ..core.dataset import DatasetError, DatasetWriter
+from ..core.detectors.yolo import PARAM_DEFAULTS as YOLO_PARAMS
+from ..core.detectors.yolo import detector_args
 from ..core.image import InputError, SeabedImageInput
 from ..core.join import JoinBuffer, Released
-from ..core.pipeline import Pipeline, PipelineConfig
+from ..core.pipeline import Pipeline, PipelineConfig, on_map
 from ..core.recordlog import RecordLog
 from ..core.records import canonical_json
 from ..core.stats import LatencyStats
@@ -89,7 +91,15 @@ class PerceptionNode(Node):
             sigma_heading_deg=p["sigma_heading_deg"], sigma_nav_m=p["sigma_nav_m"],
             footprint_row_step=p["footprint_row_step"],
             detector_input_mapping=p["detector_input_mapping"],
-            near_range_mask_m=p["near_range_mask_m"], turn_window_s=p["turn_window_s"]))
+            near_range_mask_m=p["near_range_mask_m"], turn_window_s=p["turn_window_s"],
+            detector_args=detector_args(p["detector"], p)))
+        #: only detections at or above this confidence go on the GCS map
+        #: (owner, 2026-10-23); the records keep every detection, same uids
+        self.map_min_confidence = float(p["map_min_confidence"])
+        #: cumulative tile counters of the YOLO adapter (status topic)
+        self.tiling = {"pictures": 0, "tiles": 0, "tiles_skipped": 0,
+                       "boxes_before_merge": 0, "boxes_after_merge": 0, "capped": 0,
+                       "detections_on_map": 0, "detections_below_map": 0}
         self.join = JoinBuffer(timeout_s=p["join_timeout_s"],
                                need_png=(self.mode == "dataset"))
         self.latency = {"join": LatencyStats(), "pipeline": LatencyStats(),
@@ -133,6 +143,7 @@ class PerceptionNode(Node):
             "detector_input_mapping": "fixed_gray_v1", "near_range_mask_m": 0.0,
             "turn_window_s": 1.0,
             "label_source": "auto", "label_min_rows": 3, "label_wait_s": 3.0,
+            "map_min_confidence": 0.10, **YOLO_PARAMS,
             "calibration": "identity", "sigma_h_m": 0.10,
             "sigma_heading_deg": 2.0, "sigma_nav_m": 1.0, "footprint_row_step": 16,
             **DEFAULT_TOPICS,
@@ -247,7 +258,9 @@ class PerceptionNode(Node):
             "stream_stats": self.join.streams[rel.stream_id].to_json(),
             "latency_ms": {"join": 1000.0 * (last - rel.first_seen),
                            "pipeline": 1000.0 * (t1 - t0)}}
-        self.pub_det.publish(detections_to_msg(dets, record["time"]["t_max_s"] or 0.0))
+        shown = on_map(dets, self.map_min_confidence)
+        self.pub_det.publish(detections_to_msg(shown, record["time"]["t_max_s"] or 0.0))
+        self._count_tiles(record, len(shown), len(dets or []) - len(shown))
         rec_json = canonical_json(record)
         self.pub_rec.publish(String(data=rec_json))
         t2 = time.monotonic()
@@ -260,6 +273,17 @@ class PerceptionNode(Node):
             self.log.write(record)
         if self.dataset is not None:
             self._dataset_write(img, record, inp)
+
+    def _count_tiles(self, record: dict, n_map: int, below: int) -> None:
+        self.tiling["detections_on_map"] += n_map
+        self.tiling["detections_below_map"] += below
+        st = record["summary"].get("detector_tiles")
+        if not st:
+            return
+        self.tiling["pictures"] += 1
+        for k in ("tiles", "tiles_skipped", "boxes_before_merge", "boxes_after_merge"):
+            self.tiling[k] += int(st.get(k, 0))
+        self.tiling["capped"] += int(record["processing"]["detector"].get("capped", 0))
 
     # ---- dataset -----------------------------------------------------------------
     def _dataset_write(self, img, record, inp) -> None:
@@ -306,7 +330,9 @@ class PerceptionNode(Node):
                          "ground_truth": (self.ground_truth.stats()
                                           if self.ground_truth is not None else None)}),
             "detector": {"name": self.pipeline.detector.name,
-                         "dummy": bool(self.pipeline.detector.is_dummy)},
+                         "dummy": bool(self.pipeline.detector.is_dummy),
+                         "map_min_confidence": self.map_min_confidence,
+                         "tiling": dict(self.tiling)},
             "streams": self.join.stats_json(),
             "pending": self.join.pending,
             "records_published": self.records_published,

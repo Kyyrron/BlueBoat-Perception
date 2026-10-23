@@ -190,3 +190,38 @@ enclose only 50–73 % of the shadows.
 pipes sit with their highlight in the green band and their shadow in the blue band.
 Ropes and chains get their correct bounding box, but are barely visible in the picture
 (see TODO).
+
+## Check 7 — the tiled YOLO path, live (to run; added 2026-10-23)
+
+Not run yet: it needs trained weights (§15 of `DESIGN.md`, built from your simulated
+worlds) and Ultralytics importable from the workspace's Python. What was verified
+without ROS (cloud session, 2026-10-23): the adapter with real Ultralytics 8.4.184 on
+CPU (untrained YOLO11n / YOLO26n) gives byte-identical records live-path vs file-path
+(`tests/test_yolo.py`), and a synthetic end-to-end smoke run (tile dataset → 3-epoch
+training → `evaluate_detector.py`) completed. That run is plumbing, not a result.
+
+**Commands** (the Phase 3 setup above, one personalized world, Normal session):
+```bash
+# 1. the node with the YOLO detector (or set the same keys in config/perception.yaml)
+ros2 run blueboat_perception perception_node --ros-args \
+    --params-file ~/ros2_ws/install/blueboat_perception/share/blueboat_perception/config/perception.yaml \
+    -p detector:=yolo -p detector_model:=$HOME/ros2_ws/data/Perception_models/<name>/weights/best.pt \
+    -p data_dir:=$HOME/ros2_ws
+# 2. the simulator world mission + the GCS (START, Record), as in check 1
+# 3. status during the run: tiles cut / skipped, boxes before / after merge, map counts
+ros2 topic echo --once /sss_ai/perception/status std_msgs/msg/String \
+    --qos-durability transient_local --qos-reliability reliable
+# 4. offline = live over the recorded session
+python3 -m blueboat_perception.cli.offline <session> --detector yolo \
+    --detector-model <same best.pt> --compare ~/ros2_ws/data/Perception_data/live/<stream_id>.jsonl
+```
+**Pass criteria:**
+- one record per picture: `processing.detector.name == "yolo"`,
+  `params.model.sha256` = the weights' SHA-256, `summary.detector_tiles.tiles` = 18 at
+  2400 columns (fewer skipped only off the swath);
+- the GCS map shows only detections with `confidence >= 0.10`; the record holds the rest
+  with the same uids (`status.detector.tiling.detections_below_map`);
+- `--compare`: every record identical (CPU on both sides; a GPU run may differ in the last
+  bits of a score — then run both on CPU);
+- pipeline latency per picture (`latency_ms.pipeline` p95) well below the picture period
+  (≥ 2.8 s measured): 18 tiles at 256² on the laptop CPU.

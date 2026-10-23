@@ -17,7 +17,10 @@ regions:
   side covers.
 
 It prints the share of boxes whose highlight is brighter than the background
-and whose shadow is darker, and writes ``label_stats.json``.
+and whose shadow is darker, and writes ``label_stats.json``. Each box also gets
+its class under the visibility rule (``label_visibility.py``, ``--visibility-db``,
+default 2 dB): ``visible`` / ``faint`` / ``unmeasurable`` -- the same rule
+``make_tile_dataset.py`` applies.
 """
 
 from __future__ import annotations
@@ -28,6 +31,8 @@ import sys
 from pathlib import Path
 
 import numpy as np
+
+from label_visibility import DEFAULT_THRESHOLD_DB, box_contrast, classify
 
 
 def _boxes(sidecar: dict):
@@ -53,14 +58,6 @@ def _draw(img: np.ndarray, boxes, cv2) -> np.ndarray:
     return rgb
 
 
-def _region_mean(db, rows, c0, c1):
-    if c1 < c0 or not len(rows):
-        return float("nan")
-    v = db[np.asarray(rows)][:, c0:c1 + 1]
-    v = v[np.isfinite(v)]
-    return float(v.mean()) if v.size else float("nan")
-
-
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("dataset", type=Path)
@@ -68,6 +65,8 @@ def main(argv=None) -> int:
     ap.add_argument("--crops", action="store_true")
     ap.add_argument("--stats", action="store_true")
     ap.add_argument("--limit", type=int, default=0, help="draw at most N images (0 = all)")
+    ap.add_argument("--visibility-db", type=float, default=DEFAULT_THRESHOLD_DB,
+                    help="visibility rule threshold [dB] (label_visibility.py)")
     a = ap.parse_args(argv)
     ds, out = a.dataset.resolve(), a.out.resolve()
     if out == ds or ds in out.parents:
@@ -100,25 +99,11 @@ def main(argv=None) -> int:
             drawn += 1
         if a.stats:
             db = np.load(ds / "raw" / f"{stem}_db.npz")["db"]
-            H = db.shape[0]
             for b in boxes:
-                p = b["box_px"]
-                rows = list(range(p["r0"], p["r1"] + 1))
-                taken = set()
-                for o in boxes:
-                    if o["side"] == b["side"]:
-                        taken.update(range(o["box_px"]["r0"], o["box_px"]["r1"] + 1))
-                bg_rows = [r for r in range(H) if r not in taken]
-                hc = b["highlight_cols"]
-                sc = b.get("shadow_cols")
-                hl = _region_mean(db, rows, hc[0], hc[1])
-                bgh = _region_mean(db, bg_rows, hc[0], hc[1])
-                sh = _region_mean(db, rows, sc[0], sc[1]) if sc else float("nan")
-                bgs = _region_mean(db, bg_rows, sc[0], sc[1]) if sc else float("nan")
+                c = box_contrast(db, boxes, b)
                 stats.append({"stem": stem, "object_id": b["object_id"], "type": b["type"],
-                              "rows": b["rows"], "shadow_m": b["shadow_m"],
-                              "highlight_db": hl, "background_at_highlight_db": bgh,
-                              "shadow_db": sh, "background_at_shadow_db": bgs})
+                              "rows": b["rows"], "shadow_m": b["shadow_m"], **c,
+                              "visibility": classify(c, b["shadow_m"], a.visibility_db)})
     print(f"{drawn} image(s) drawn -> {out}")
     if a.stats:
         hl_ok = [s["highlight_db"] > s["background_at_highlight_db"] for s in stats
@@ -131,6 +116,9 @@ def main(argv=None) -> int:
                 "shadow_darker (shadow >= 5 cm)": [sum(sh_ok), len(sh_ok)],
                 "median_highlight_minus_background_db": float(np.nanmedian(
                     [s["highlight_db"] - s["background_at_highlight_db"] for s in stats])),
+                "visibility": {k: sum(1 for s in stats if s["visibility"] == k)
+                               for k in ("visible", "faint", "unmeasurable")},
+                "visibility_db": a.visibility_db,
                 "median_shadow_minus_background_db": float(np.nanmedian(
                     [s["shadow_db"] - s["background_at_shadow_db"] for s in stats
                      if s["shadow_m"] >= 0.05] or [np.nan])),

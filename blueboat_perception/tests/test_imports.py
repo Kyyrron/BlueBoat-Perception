@@ -39,6 +39,19 @@ def test_core_imports_without_ros_qt_or_opencv(no_ros_qt_cv):
     from blueboat_perception.cli import offline  # noqa: F401  (the CLI too)
 
 
+def test_the_yolo_runtime_is_optional_and_lazy(no_ros_qt_cv, tmp_path):
+    """torch / ultralytics are blocked here too: the core, the dummy and the
+    YOLO module import without them; only building the real runtime needs them."""
+    from blueboat_perception.core.detectors import make_detector
+    from blueboat_perception.core.detectors.yolo import YoloDetector  # noqa: F401
+    assert make_detector("dummy_center").name == "dummy_center"
+    weights = tmp_path / "m.pt"
+    weights.write_bytes(b"x")
+    import pytest
+    with pytest.raises(ImportError):
+        make_detector("yolo", model_path=str(weights))
+
+
 #: The one online file allowed to name the simulator's ground-truth topics.
 GROUND_TRUTH_FILE = PY_PKG / "ros" / "ground_truth.py"
 #: The detection path: never imports the labeller.

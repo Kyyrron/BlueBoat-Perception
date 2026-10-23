@@ -26,9 +26,21 @@ from .uncertainty import UncertaintyParams, covariance_xy
 #: after the GCS's former in-process ``1_000_000 + 16·image_id + k``.
 UID_BASE = 2_000_000
 UID_PER_IMAGE = 16
-#: Detections past the 16th of one image (none today: the dummy makes one)
-#: take a second, non-overlapping range rather than colliding.
+#: Detections past the 16th of one image take a second, non-overlapping
+#: range rather than colliding.
 UID_OVERFLOW_BASE = 1_000_000_000
+#: At most this many detections per image (owner, 2026-10-23): the overflow
+#: range holds k < 1000 per image, so a 1000th detection would collide with
+#: the next image's uids. The detector's order decides which are kept (the
+#: YOLO adapter: descending score); the cut is counted in the record.
+MAX_DETECTIONS = 999
+
+
+def on_map(detections, min_confidence: float) -> list:
+    """The detections drawn on the GCS map (``/sss_ai/detections``): those
+    with ``confidence >= min_confidence`` (``map_min_confidence``, owner
+    2026-10-23). The record keeps every detection; uids are unchanged."""
+    return [d for d in (detections or []) if d["confidence"] >= float(min_confidence)]
 
 
 def station_uid(image_id: int, k: int) -> int:
@@ -57,14 +69,17 @@ class PipelineConfig:
     #: Drawn extent of a point detection on the map [m] (the station's
     #: in-process dummy drew 1.0 m).
     point_extent_m: float = 1.0
+    #: Cap on the detections of one image (uid range, ``MAX_DETECTIONS``).
+    max_detections: int = MAX_DETECTIONS
 
     @classmethod
     def from_params(cls, *, preprocess="fixed_gray", detector="dummy_center",
                     calibration="identity", sigma_h_m=0.10, sigma_heading_deg=2.0,
                     sigma_nav_m=1.0, footprint_row_step=16,
                     detector_input_mapping="fixed_gray_v1", near_range_mask_m=0.0,
-                    turn_window_s=1.0) -> "PipelineConfig":
+                    turn_window_s=1.0, detector_args=None) -> "PipelineConfig":
         return cls(preprocess=str(preprocess), detector=str(detector),
+                   detector_args=dict(detector_args or {}),
                    calibration=str(calibration),
                    detector_input_mapping=str(detector_input_mapping),
                    near_range_mask_m=float(near_range_mask_m),
@@ -84,7 +99,8 @@ class PipelineConfig:
                 "calibration": self.calibration,
                 "uncertainty": self.uncertainty.to_json(),
                 "footprint_row_step": self.footprint_row_step,
-                "point_extent_m": self.point_extent_m}
+                "point_extent_m": self.point_extent_m,
+                "max_detections": self.max_detections}
 
 
 class Pipeline:
@@ -132,6 +148,26 @@ class Pipeline:
             "valid_share": (None if inp.valid is None else
                             float(np.count_nonzero(inp.valid)) / inp.valid.size)}
         raw = self.detector.detect(inp)
+        stats = getattr(self.detector, "last_stats", None)
+        if stats is not None:
+            # A detector that reports counters (the YOLO adapter) gets them in
+            # the record; the dummy has none, so its records are unchanged.
+            record["summary"]["detector_tiles"] = dict(stats)
+            if stats.get("ran") is False:
+                # No detector input (identity without its PNG): not searched,
+                # so unknown -- never "searched, nothing found".
+                record["processing"]["detector"]["status"] = "no_detector_input"
+                spans = geo.side_spans(img)
+                record["sides"], record["footprint"] = self._coverage(img, spans)
+                pp, ps = spans["port"]["present"], spans["starboard"]["present"]
+                record["summary"]["one_sided_rows"] = int(np.count_nonzero(pp ^ ps))
+                record["detections"] = None
+                return record, None, inp
+        capped = max(len(raw) - self.config.max_detections, 0)
+        if capped:
+            raw = raw[:self.config.max_detections]
+        if capped or stats is not None:
+            record["processing"]["detector"]["capped"] = capped
         grids = geo.world_grids(img)
         turn = self._turn(img)
         dets = [self._detection(img, grids, d, k, turn) for k, d in enumerate(raw)]
@@ -178,9 +214,7 @@ class Pipeline:
                 "perception_version": __version__,
                 "preprocess": {"name": self.preprocessor.name,
                                "params": dict(self.preprocessor.params)},
-                "detector": {"name": self.detector.name,
-                             "version": self.detector.version,
-                             "dummy": bool(self.detector.is_dummy), "status": "ran"},
+                "detector": self._detector_info(),
                 "calibration": {"name": self.calibrator.name,
                                 "params": dict(self.calibrator.params),
                                 "calibrated": bool(self.calibrator.calibrated)},
@@ -229,6 +263,15 @@ class Pipeline:
             "detections": None,
             "provenance": {},
         }
+
+    def _detector_info(self) -> Dict[str, Any]:
+        info = {"name": self.detector.name, "version": self.detector.version,
+                "dummy": bool(self.detector.is_dummy), "status": "ran"}
+        params = getattr(self.detector, "params", None)
+        if params is not None:
+            # weights + SHA-256, model family, versions, tiling, merge rule
+            info["params"] = params
+        return info
 
     def _coverage(self, img: SeabedImageInput, spans) -> Tuple[dict, Optional[dict]]:
         rows_idx = geo.decimated_rows(img.shape[0], self.config.footprint_row_step)

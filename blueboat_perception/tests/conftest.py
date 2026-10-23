@@ -33,7 +33,7 @@ PY_PKG = PKG_ROOT / "blueboat_perception"
 
 BLOCKED_PREFIXES = ("rclpy", "rcl_interfaces", "sensor_msgs", "std_msgs", "vision_msgs",
                     "builtin_interfaces", "launch", "launch_ros", "ament_index_python",
-                    "PySide6", "PyQt5", "cv2")
+                    "PySide6", "PyQt5", "cv2", "torch", "torchvision", "ultralytics")
 
 
 def sss_data_dir() -> Optional[Path]:

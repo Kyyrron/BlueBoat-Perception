@@ -51,7 +51,51 @@ the module's `.claude/CLAUDE.md`; the detector-input decisions in
       updates, the root `CLAUDE.md` and the `module-gates` / `file-interfaces` skills (applied
       by your order), the report.
 
+- [x] **Tiled YOLO task (2026-10-23)** — brief "tile the long seabed images for YOLO":
+  - [x] Phase 0–1: verification, questions (answers: visibility 2 dB as recommended;
+        tile edges B + (i) after a literature check; pad short pictures; box centre kept;
+        `map_min_confidence` 0.10; cap 999; worlds by the owner; Ultralytics a
+        superproject dependency later);
+  - [x] Phase 2: `core/tiling.py`, `core/merge.py` + tests;
+  - [x] Phase 3: `detectors/yolo.py` (Ultralytics, lazy), pipeline / node / CLI / config,
+        records + status (additive), offline = live tested on CPU with real Ultralytics;
+  - [x] Phase 4: `tools/make_tile_dataset.py` + class-drift checks (all three creation
+        paths use `yolo_classes_v1`; the simulator `dev` CATALOG = v1, 29, same order);
+  - [x] Phase 5: `tools/train_yolo.py`, `tools/evaluate_detector.py`, docs; a synthetic
+        smoke run (plumbing only);
+  - [ ] **Phase 6 — run the comparison (owner):** build the simulated worlds in dataset
+        mode, then the README recipe (tile datasets → YOLO11s / YOLO26s × arms (a) full
+        640, (b) 256/128, (c) 256/64; merge nms vs greedy_nmm on (b); 3- vs 1-channel →
+        evaluate on val, choose, then report once on test). Results "on simulated data".
+
 ## Open technical items
+- [ ] **Tune the visibility threshold (to do once out of cloud mode, owner 2026-10-23).**
+      2 dB is provisional (`tools/label_visibility.py`). On the first simulated datasets:
+      `tools/draw_labels.py <dataset> --out DIR --stats`, look at the
+      `highlight − background` / `shadow − background` histograms and the faint share,
+      and set the threshold from them (a new value is a parameter, recorded in each tile
+      manifest).
+- [ ] **Decide the merge rule** (`nms` default vs `greedy_nmm`) on the val worlds, write it
+      with its evidence in DESIGN §4.10, then set `merge` in `config/perception.yaml`.
+      Known: greedy anchors on the best-scored box of a group; at the 0.01 detector
+      threshold weak boxes can widen a union.
+- [ ] **Calibration data:** once trained weights exist, the held-out simulated worlds
+      (never the test worlds used for the comparison) are ready for a calibrator fit
+      (temperature / Platt, R11, DESIGN §4.5). Not started; `calibrated` stays false.
+- [ ] **Not now (listed only):** upscaled tiles (2× to 512); ground-range resampling (R26:
+      consistent feature width across range, never evaluated on detection); a
+      calibrator.
+- [ ] Tile sidecars are not Aug Studio inputs (a tile does not start at the nadir). To
+      augment, run the Aug Studio on the full-picture dataset first; the tile writer
+      then needs the augmented dataset to keep `perception.labels` (highlight columns) —
+      not checked.
+- [ ] Option (i) leaves fragments with < 50 % of their highlight unlabelled in a tile;
+      Ultralytics' tips say partial labelling "will not work". Measure how often it
+      happens on the first tile datasets (`counts.*.dropped_partial` in the manifest).
+- [ ] Live check 7 (the tiled path in a world mission, `LIVE_CHECKS.md`): needs weights.
+- [ ] The simulator's GitHub default branch `main` (0225a7f) has **13** World Builder
+      classes; `dev` (pinned by the superproject) has the 29 of `yolo_classes_v1`. A
+      checkout of `main` beside this module fails the class-map test.
 - [ ] **The first image of every stream arrives ~3.06 s late** (one part; all three runs).
       Consistent with a DDS heartbeat repair of the first large RELIABLE sample (Fast DDS
       default period 3 s); not verified, nothing lost. Check on the real boat; a warm-up
@@ -69,8 +113,6 @@ the module's `.claude/CLAUDE.md`; the detector-input decisions in
       (up to ~4 dB brighter; STUDY M7). Synthetic training data inherit it (CM-11).
 - [ ] Roll (6.6): measure on a Gazebo wave scenario and a real log with `/mavros/imu/data`
       before any correction is enabled.
-- [ ] YOLO runtime and adapter. No torch, ultralytics, onnxruntime or GPU on this machine.
-      Tile across-track (256 × up to 2402), NMS across tiles (DESIGN §4.4, §5).
 - [ ] Station uids repeat across GCS streams (image ids restart at every START), as the
       station's own did; a stream-aware uid needs a GCS listener + contract change.
 - [ ] Calibration: held-out split per domain, temperature/Platt, reliability + ECE
@@ -88,16 +130,22 @@ the module's `.claude/CLAUDE.md`; the detector-input decisions in
     conservative max of the flat-floor tip and the renderer's mask length.
 - [ ] **Faint objects get labels the picture barely shows.** Ropes, chains and small
       plastic items at long range: in 67 of the 245 pings where the geometry places a
-      single object (live run, check 6), the noise-free render changes by < 1 dB. A visibility rule (e.g. the renderer's
-      contrast) would need the simulator to publish it; today the sidecar's size and
-      type allow filtering.
+      single object (live run, check 6), the noise-free render changes by < 1 dB.
+      **Partly addressed 2026-10-23:** the tile writer applies a measured-contrast rule
+      (2 dB on the raw dB, `tools/label_visibility.py`; threshold to tune, above). A
+      renderer-side contrast would need the simulator to publish it.
+- [ ] **Label range margin: code 2 bins, comments 5.** `sim_labels.py`:
+      `DEFAULT_RANGE_MARGIN_BINS = 2` (DESIGN §7: "±2 bins") while the module docstring and
+      the constant's own comment derive 5 bins from the renderer's boxcar at the default
+      acquisition. Check 6 was measured with 2. Found 2026-10-23, not changed (labels are
+      not this task's); decide which is meant before the next labelled datasets.
 - [ ] **SSS vs simulator bin convention.** The GCS pitch is `L/(N − 1)`
       (`models/sonar.py:186`, sample 0 at the start, the last at the end). The
       simulator renders bin k over `[k·L/N, (k + 1)·L/N)`. That is 0.08 %, under one bin
       at full range. The labels use the simulator's, and the GCS georeferencing carries
       the 0.08 %.
-- [ ] `data.yaml` train/val placeholders are untested with Ultralytics (not installed
-      here).
+- [x] `data.yaml` train/val placeholders: superseded by the tile datasets' `data.yaml`
+      (`images/{train,val,test}`), trained with Ultralytics 8.4.184 in the smoke run.
 - [ ] Aug Studio intensity mapping for `identity` datasets only (REQUESTS R-3; `fixed_gray`
       datasets declare `log`, resolved).
 - [ ] Measure σ_nav, σ_ψ, σ_h against USBL / RTK. They are assumptions today

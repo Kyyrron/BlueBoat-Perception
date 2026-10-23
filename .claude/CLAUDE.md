@@ -6,7 +6,7 @@ laptop like every node of the project; the boat runs nothing of ours.
 
 ```
 GCS seabed image (raw dB + PNG + metadata)  ->  join  ->  preprocess (detector input)
-   ->  detector (dummy today, YOLO later)  ->  calibration (identity)  ->  georeference
+   ->  detector (dummy by default; YOLO over 256 x 256 tiles, merged)  ->  calibration (identity)  ->  georeference
    ->  /sss_ai/detections (GCS map)  +  one record per image (/sss_ai/image_records)
 ```
 
@@ -25,7 +25,11 @@ and the code disagree, the code wins: read the file before trusting a descriptio
     - `geometry.py` — pixel → world (conventions 1 / 2), spans, footprint, turns;
     - `preprocess.py` — the detector input: `fixed_gray` / `identity`, the mask, the
       disabled boundaries;
-    - `detectors/` — `dummy` = the station's former dummy; `yolo` = interface stub;
+    - `detectors/` — `dummy` = the station's former dummy (default); `yolo` = the
+      Ultralytics adapter over tiles (2026-10-23; `ultralytics` / `torch` imported only
+      when one is built);
+    - `tiling.py` — across-track 256 × 256 tiles (starts, padding, skips, box shift);
+      `merge.py` — `nms` / `greedy_nmm` across overlapping tiles;
     - `calibration.py`, `uncertainty.py` (`geometric_v1`), `records.py` (canonical
       JSON);
     - `pipeline.py`, `join.py`, `session.py`, `dataset.py`, `labels.py`,
@@ -41,7 +45,13 @@ and the code disagree, the code wins: read the file before trusting a descriptio
 - `tools/` (not installed):
   - `fit_detector_input.py` — fits a fixed mapping;
   - `preprocessing_study.py` — reproduces STUDY §5;
-  - `draw_labels.py` — draws a dataset's boxes and checks their intensities.
+  - `draw_labels.py` — draws a dataset's boxes and checks their intensities;
+  - `label_visibility.py` — the 2 dB visibility rule (shared);
+  - `make_tile_dataset.py` — Perception datasets → Ultralytics tile dataset, split by
+    world (rule B + (i), class-drift checks);
+  - `train_yolo.py` — YOLO11s / YOLO26s training, explicit augmentation, `model.json`;
+  - `evaluate_detector.py` — AP / recall per range band / false detections / latency on
+    held-out worlds, through the real pipeline.
 - `docs/` — DESIGN, topics, PREPROCESSING_STUDY, REFERENCES, REQUESTS, LIVE_CHECKS;
   `data/phase4_2026-10-16.json`.
 
@@ -62,7 +72,12 @@ and the code disagree, the code wins: read the file before trusting a descriptio
   GCS runs no detector; its replay "Run AI" imports this module's core in-process
   (`blueboat_gcs/core/perception_core.py`). This module imports nothing from the GCS.
 - Detection uid = `2_000_000 + 16·image_id + k`; past the 16th detection of one image,
-  `1_000_000_000 + 1000·image_id + k`.
+  `1_000_000_000 + 1000·image_id + k`; at most 999 detections per image (the cut is
+  counted, `processing.detector.capped`).
+- Only detections with `confidence >= map_min_confidence` (0.10) go on
+  `/sss_ai/detections` (the GCS map); records keep all (owner, 2026-10-23).
+- Detector switch: `detector: dummy_center | yolo` + `detector_model` (weights) and the
+  YOLO parameters (`docs/topics.md` §6; README "Switching the detector").
 - **Files written** (root `<root>` = `data_dir` → `$BLUEBOAT_DATA_DIR` → the parent of
   the first `$COLCON_PREFIX_PATH` entry → the cwd, as Control's `data_root`; normally
   `~/ros2_ws`):
@@ -71,7 +86,10 @@ and the code disagree, the code wins: read the file before trusting a descriptio
     `detections.json`, `summary.json`;
   - `<root>/data/Dataset_data/<name>/` — dataset mode: `images/` (the detector input),
     `display/`, `labels/` (YOLO, from the simulator's ground truth in a world run; else
-    empty), `raw/`, `manifest.json`, `data.yaml`, `ground_truth_bag/`.
+    empty), `raw/`, `manifest.json`, `data.yaml`, `ground_truth_bag/`;
+  - offline tools only: `<root>/data/Tile_data/<name>/` (tile datasets),
+    `<root>/data/Perception_models/<name>/` (weights + `model.json`),
+    `<root>/data/Perception_eval/<name>/` (`results.json`).
   - Names are claimed exclusively (`-2`, `-3` …); nothing is ever overwritten.
 - **Started by MCS** (`launch_manager.perception_command`): every real-robot launch in
   `mode:=normal`, and every personalized-world Gazebo launch in the launch dialog's
@@ -115,6 +133,17 @@ and the code disagree, the code wins: read the file before trusting a descriptio
    `calibrated` is true (project_synthesis §8.2 ⚠). Today it is identity, so false.
 10. **Cite nothing from memory.** Every non-software choice traces to `docs/REFERENCES.md`
     (read in full, or the claim is not used).
+11. **The YOLO runtime is optional and lazy** (2026-10-23). No `torch` / `ultralytics` at
+    import time anywhere in `core/` (the import sweep blocks them); only building a
+    `YoloDetector` with the default runtime imports them. The dummy stays selectable,
+    tested, and its records byte-identical.
+12. **One tiling function for training and inference** (`core/tiling.py`), on the same
+    detector input (`fixed_gray`). Tiles are never resized; one record per picture, never
+    per tile.
+13. **Split by world, never by image; never tune on the held-out test worlds.** Every
+    trained model and every result carries its configuration, dataset + world split,
+    seed, model version, library and code versions in a JSON beside it, and is stated
+    "on simulated data" (CM-11, CM-13).
 
 ## 4. The detector input (STUDY §6, decided 2026-10-16)
 - **`fixed_gray`** (default, decision 6.4):
@@ -143,6 +172,23 @@ and the code disagree, the code wins: read the file before trusting a descriptio
   - checked against noise-free renders of the recorded pings (`LIVE_CHECKS.md`
     check 6).
 
+## 4b. The YOLO detector over tiles (DESIGN §4.10, §7.1, §15; decided 2026-10-23)
+- **Tiles:** 256 × 256 at native resolution, across track only, stride 128 (64 = an arm),
+  a flush tile at `W − T`, the nadir kept; short pictures padded below with invalid
+  zeros; a tile skipped only when its valid share < 0.001 (counted).
+- **Adapter:** all tiles of a picture in one batch at `imgsz` 256, detector threshold
+  0.01, in-tile NMS 0.7, boxes shifted back, merged (`merge: nms` default; `greedy_nmm`
+  = IoS union, score max), inclusive integer boxes, the 999 cap. The box centre
+  (object + shadow) is the georeferenced point.
+- **Determinism:** CPU, seed, deterministic torch, 1e-3 px / 1e-6 rounding; offline =
+  live byte equality tested with real Ultralytics (CPU).
+- **Tile datasets:** rule B + (i) at tile edges (keep a clipped label if ≥ 50 % of its
+  highlight is in the tile and it is ≥ 4 px wide; else drop the label, keep the tile);
+  faint boxes (< 2 dB contrast) dropped and their tiles left out; ≤ 10 % empty tiles in
+  train; classes = `yolo_classes_v1` or refused.
+- **Merge rule and visibility threshold are not yet decided on evidence** (no simulated
+  dataset existed on 2026-10-23); see TODO.
+
 ## 5. Commands
 ```bash
 # build (from ~/ros2_ws; never Control's in-progress work with it)
@@ -160,6 +206,11 @@ python3 -m blueboat_perception.cli.offline <session> [--compare <live.jsonl>] \
 # status during a run
 ros2 topic echo --once /sss_ai/perception/status std_msgs/msg/String \
     --qos-durability transient_local --qos-reliability reliable
+# tile datasets, training, evaluation (offline; README has the full comparison recipe)
+python3 tools/make_tile_dataset.py <datasets...> --split split.yaml --name tiles128 [--stride 64] [--mode full]
+python3 tools/train_yolo.py --data <root>/data/Tile_data/tiles128/data.yaml --model yolo11s.pt|yolo26s.pt --name NAME
+python3 tools/evaluate_detector.py <datasets...> --split split.yaml --on val|test --name NAME \
+    --detector yolo --detector-model <best.pt> [--merge greedy_nmm] [--detector-tiling full]
 # reproduce STUDY §5 (read-only) / fit a NEW mapping
 /usr/bin/python3 tools/preprocessing_study.py --out DIR [--only …]
 /usr/bin/python3 tools/fit_detector_input.py --name fixed_gray_v2 --out … <real image folders>
@@ -171,7 +222,16 @@ ros2 topic echo --once /sss_ai/perception/status std_msgs/msg/String \
 - The Aug Studio sidecar test needs pydantic. Run it with
   `SSS-Dataset-Aug-Studio/.venv/bin/python -m pytest tests/test_dataset.py`.
 
-## 6. Gates (2026-10-16; Perception re-measured 2026-10-19)
+## 6. Gates (2026-10-16; Perception re-measured 2026-10-19; extended 2026-10-23)
+- **2026-10-23 (cloud session: no ROS, no corpus):** system python, no sibling repos:
+  83 pass / 12 skip before the tiling work → **152 pass / 17 skip** after (the new skips:
+  2 real-Ultralytics tests, the corpus tiling test, the node map-filter test, the tile
+  sidecar's Aug Studio test). With the simulator (`dev`) and Aug Studio (`dev`) beside the
+  module: 155 / 14. In a venv with torch 2.14.1 CPU + ultralytics 8.4.184: 157 / 12. On
+  the laptop the ROS node tests (incl. the map filter) and the corpus tests run as well.
+  SSS's `test_perception_golden.py` / `test_perception_bridge.py` could not run in the
+  cloud (no libEGL for PySide6); the dummy's records were checked byte-identical against
+  the unmodified code instead — run them on the laptop.
 - **Perception:** 111 pass / 6 skip on 2026-10-19 (109 / 4 on 2026-10-16). The skips:
   5 corpus folders without stored in-process detections, and the pydantic test on the
   system python. The corpus count depends on what is on disk: offline exports and every
@@ -185,7 +245,10 @@ ros2 topic echo --once /sss_ai/perception/status std_msgs/msg/String \
 - A fresh clone gets everything except the on-disk corpus.
 
 ## 7. Where things are documented
-- **Open work:** `.claude/TODO.md`.
+- **Open work:** `.claude/TODO.md`. **To do once out of cloud mode (owner, 2026-10-23):**
+  tune the provisional 2 dB visibility threshold (`tools/label_visibility.py`) on the
+  first simulated datasets (`draw_labels.py --stats`), and decide the merge rule on the
+  held-out comparison.
 - **Live checks and the real-boat command sheet:** `docs/LIVE_CHECKS.md`.
 - **The SSS side** (what changed there, what is pinned unchanged):
   `BlueBoat-SSS/blueboat_sss/blueboat_gcs/docs/PERCEPTION_INTEGRATION.md`.

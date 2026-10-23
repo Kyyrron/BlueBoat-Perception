@@ -99,6 +99,19 @@ def test_one_record_and_one_detection_array_per_image(node_factory, tmp_path):
     assert log.is_file() and len(log.read_text().splitlines()) == 1
 
 
+def test_the_map_shows_only_detections_above_map_min_confidence(node_factory):
+    # the dummy scores 0.5: above the default 0.10, below 0.6
+    node, sent = node_factory(map_min_confidence=0.6)
+    _feed(node, make_metadata(image_id=0), make_db())
+    rec = json.loads(sent["rec"][0].data)
+    assert len(rec["detections"]) == 1                # the record keeps it
+    assert len(sent["det"]) == 1 and len(sent["det"][0].detections) == 0
+    node._publish_status()
+    st = json.loads(sent["status"][-1].data)["detector"]
+    assert st["map_min_confidence"] == 0.6
+    assert st["tiling"]["detections_below_map"] == 1 and st["tiling"]["pictures"] == 0
+
+
 def test_the_32fc1_array_arrives_bit_exact(node_factory):
     from blueboat_perception.ros.convert import image_to_array
     db = make_db(seed=4)

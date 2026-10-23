@@ -26,7 +26,7 @@ additive (CM-1).
 | `/sss_ai/seabed_image` | `sensor_msgs/Image` (`32FC1`) | GCS → Perception | RELIABLE, KEEP_LAST 32, VOLATILE | one per seabed image (0.1–0.36 Hz measured; ≤ ~1 Hz) |
 | `/sss_ai/seabed_image/png` | `sensor_msgs/Image` (`mono8`) | GCS → Perception | same | same |
 | `/sss_ai/seabed_image/metadata` | `std_msgs/String` (JSON, §2) | GCS → Perception | same | same |
-| `/sss_ai/detections` | `vision_msgs/Detection2DArray` (§3) | Perception → GCS (`DetectionsListener`, existing) | default (RELIABLE, KEEP_LAST 10), as the listener | one array per image, may be empty |
+| `/sss_ai/detections` | `vision_msgs/Detection2DArray` (§3) | Perception → GCS (`DetectionsListener`, existing) | default (RELIABLE, KEEP_LAST 10), as the listener | one array per image, may be empty; only detections with `confidence >= map_min_confidence` (§6; additive 2026-10-23) |
 | `/sss_ai/image_records` | `std_msgs/String` (JSON, §4) | Perception → Belief (future), analysis | RELIABLE, KEEP_LAST 100, VOLATILE | one per image |
 | `/sss_ai/perception/status` | `std_msgs/String` (JSON, §5) | Perception → operator, tests | RELIABLE, KEEP_LAST 1, TRANSIENT_LOCAL | 1 Hz |
 
@@ -95,7 +95,9 @@ sessions on disk lack the starred keys):
 ## 3. `/sss_ai/detections` — `vision_msgs/Detection2DArray`
 
 This is the GCS's existing contract (`blueboat_gcs/ros/detections_listener.py`), filled as
-follows:
+follows. **Since 2026-10-23** an array carries only the image's detections with
+`confidence >= map_min_confidence` (default 0.10, §6); the record (§4) keeps all of them,
+and the uids are the record's. With the dummy (score 0.5) nothing changes.
 
 | Field | Value |
 |---|---|
@@ -130,7 +132,10 @@ keys, compact, no NaN).
                                "params": {"near_range_mask_m": 0.0, "mapping": "fixed_gray_v1",
                                           "mapping_sha256": "…", "window_db": [-31.15, 17.16]}},
                 "detector": {"name": "dummy_center", "version": "1", "dummy": true,
-                             "status": "ran"},          // ran | no_pixels
+                             "status": "ran"},          // ran | no_pixels | no_detector_input
+                // yolo (additive, 2026-10-23): + "params": {model, runtime, device, seed,
+                //   tiling, input_size, score_threshold, nms_iou, max_det_tile, merge,
+                //   rounding} and "capped": n
                 "calibration": {"name": "identity", "params": {}, "calibrated": false},
                 "uncertainty": {"model": "geometric_v1", "sigma_h_m": 0.10,
                                 "sigma_heading_rad": 0.0349, "sigma_nav_m": 1.0,
@@ -157,6 +162,10 @@ keys, compact, no NaN).
              "max_abs_yaw_rate_rad_s": …,
              "one_sided_rows": 0, "display_model_ready": true,
              "detector_input": {"gray": true, "valid_share": 0.97},
+             // yolo only (additive, 2026-10-23):
+             "detector_tiles": {"ran": true, "tiles": 18, "tiles_skipped": 0,
+                                "boxes_in_padding": 0, "boxes_before_merge": 7,
+                                "boxes_after_merge": 3},
              "turn": {"window_s": 1.0, "criterion": "…", "rows_rstar_lt_range": 0,
                       "rows_rstar_lt_half_range": 0, "share_rstar_lt_range": 0.0}},
  "detections": [ {…}, … ],               // [] = searched, nothing found; null = not run (no_pixels)
@@ -193,7 +202,10 @@ between a live record and the offline record of the same saved image.
 | `sides.*.polygon_xy` | m, world | near and far valid-seabed edges every `row_step` rows (+ first and last), closed. **The seabed this image searched on that side** |
 | `footprint.outline_xy` | m, world | port far edge + starboard far edge ring; includes the nadir gap (not searched) |
 | `summary.one_sided_rows` | rows | rows with one side entirely NaN |
-| `detections` | | `[]` means searched, nothing found (negative evidence); `null` means pixels missing, so **unknown** |
+| `detections` | | `[]` means searched, nothing found (negative evidence); `null` means pixels missing, or (YOLO) no detector input could be built (`status: no_detector_input`), so **unknown** |
+| `processing.detector.params` | — | **YOLO only** (additive, 2026-10-23): `model` {`file`, `sha256`, `card` (from `model.json`: name, family, model, seed, created_utc, data, dataset {name, manifest_sha256})}, `runtime` {runtime, ultralytics, torch, channels, architecture}, `device`, `seed`, `tiling` {mode `tiles`\|`full`, tile, stride, min_valid_fraction}, `input_size`, `score_threshold`, `nms_iou`, `max_det_tile`, `merge` {rule `nms`\|`greedy_nmm`, threshold, metric, score `max`}, `rounding` {box_px 1e-3, score 1e-6}. Absent for the dummy |
+| `processing.detector.capped` | — | detections cut by the 999-per-image cap (YOLO: always present; others only when > 0) |
+| `summary.detector_tiles` | — | **YOLO only**: `ran`, `tiles`, `tiles_skipped` (valid share < `tile_min_valid_fraction`), `boxes_in_padding` (dropped: wholly in a tile's padding), `boxes_before_merge`, `boxes_after_merge` |
 
 **Detection object** (inside `detections`):
 
@@ -202,13 +214,13 @@ between a live record and the offline record of the same saved image.
 | `detection_id` | — | `"<stream_id>/<image_id>/<k>"`, globally unique |
 | `uid` | — | station uid (§3) |
 | `image_id`, `stream_id` | — | |
-| `class_name`, `class_id` | — | dummy: `dummy_center`, 0 |
+| `class_name`, `class_id` | — | dummy: `dummy_center`, 0; YOLO: the model's class names (the 29 `yolo_classes_v1` classes) and ids |
 | `confidence` | [0, 1] | calibrated probability if `calibrated`, else = `confidence_raw` |
 | `confidence_raw` | — | detector score; **not a probability** for YOLO-type detectors [R10 §2] |
 | `calibrated` | bool | false until a calibrator is fitted (P1 §8.2 ⚠) |
 | `dummy` | bool | true for the dummy detector |
-| `pixel` | [row, col] | box centre |
-| `bbox_px` | [r0, c0, r1, c1] | inclusive pixel box (dummy: degenerate) |
+| `pixel` | [row, col] | box centre. For a YOLO box (highlight + shadow) this is mid-box, outward of the object by about half its shadow (accepted 2026-10-23); `world_xy` is the same point |
+| `bbox_px` | [r0, c0, r1, c1] | inclusive pixel box in full-picture pixels (dummy: degenerate; YOLO: merged across tiles, edges rounded half up) |
 | `world_xy` | m, world | through the image's georef convention: the station's own world grid at that pixel (float32 precision, bit-exact) |
 | `extent_m` | m | [across, along] drawn extent: 1.0 / 1.0 for a point detection; else the box's slant-bin width and along-track rows |
 | `covariance_xy` | m², world | 2×2 `[[σxx, σxy], [σxy, σyy]]`, model `geometric_v1` (DESIGN §4.6) |
@@ -227,7 +239,12 @@ between a live record and the offline record of the same saved image.
 ```json
 {"schema": "blueboat_perception/status/1", "perception_version": "0.1.0", "mode": "normal",
  "dataset": null,                         // dataset mode: {"name", "dir", "images", "skipped_no_png"}
- "detector": {"name": "dummy_center", "dummy": true},
+ "detector": {"name": "dummy_center", "dummy": true,
+              // additive 2026-10-23:
+              "map_min_confidence": 0.10,
+              "tiling": {"pictures": 0, "tiles": 0, "tiles_skipped": 0,
+                         "boxes_before_merge": 0, "boxes_after_merge": 0, "capped": 0,
+                         "detections_on_map": 120, "detections_below_map": 0}},
  "streams": {"<stream_id>": {"completed": 120, "gaps": 0, "partial_no_pixels": 0,
              "partial_no_png": 0, "dropped_no_metadata": 0, "duplicates": 0,
              "late_parts": 0, "last_image_id": 119}},
@@ -249,7 +266,18 @@ between a live record and the offline record of the same saved image.
 | `data_dir` | `""` | the run-data root `<root>` (else `$BLUEBOAT_DATA_DIR`, then the workspace, then the cwd); outputs under `<root>/data/` |
 | `record_log` | `true` | write `Perception_data/live/<stream_id>.jsonl` |
 | `join_timeout_s` | 5.0 | release incomplete image keys after this |
-| `detector` | `dummy_center` | detector plug-in |
+| `detector` | `dummy_center` | detector plug-in: `dummy_center` or `yolo` |
+| `map_min_confidence` | 0.10 | only detections with `confidence` at or above this go on `/sss_ai/detections` (the GCS map); records keep all (owner, 2026-10-23) |
+| `detector_model` | `""` | **yolo:** the weights file (`<root>/data/Perception_models/<name>/weights/best.pt`) |
+| `detector_device` | `cpu` | yolo: `cpu` (reproducible) or e.g. `cuda:0` |
+| `detector_tiling` | `tiles` | yolo: `tiles` (256 × 256 across track) or `full` (the whole strip letterboxed: the comparison baseline) |
+| `tile_size`, `tile_stride` | 256, 128 | yolo: tile width = height [px], native resolution; stride [px] |
+| `tile_min_valid_fraction` | 0.001 | yolo: skip a tile only when its valid share is below this |
+| `detector_input_size` | 0 | yolo: YOLO `imgsz`; 0 = 256 (tiles) / 640 (full) |
+| `detector_score_threshold` | 0.01 | yolo: the detector's own cut, low on purpose (the final cut belongs to calibration / Belief) |
+| `detector_nms_iou` | 0.7 | yolo: Ultralytics' in-tile NMS IoU |
+| `merge`, `merge_threshold` | `nms`, 0.5 | yolo: how overlapping tiles' boxes are merged: `nms` (IoU) or `greedy_nmm` (intersection over smaller, union box, max score) |
+| `detector_max_det_tile` | 300 | yolo: at most this many boxes per tile (the picture is then capped at 999) |
 | `preprocess` | `fixed_gray` | the detector input: `fixed_gray` (one fixed mapping of the raw dB, decision 6.4) or `identity` (the GCS display PNG, the baseline). `roll_correction` and the deferred options (geometric correction, despeckling, histogram equalisation, Retinex) raise |
 | `detector_input_mapping` | `fixed_gray_v1` | the `fixed_gray` parameter file (packaged `core/data/<name>.json`, or a path) |
 | `near_range_mask_m` | 0.0 | mask the detector input below this slant range; 0.75 = the GCS's live nadir blank (decision 6.5) |

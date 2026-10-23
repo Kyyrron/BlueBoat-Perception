@@ -20,15 +20,16 @@ Perception turns **seabed images made by BlueBoat-SSS** into **detection data**:
 It is deliberately small:
 
 ```
-images + metadata  →  [preprocess: fixed_gray]  →  detector: dummy  →  [calibrate: identity]  →  records
+images + metadata  →  [preprocess: fixed_gray]  →  detector: dummy | YOLO over tiles  →  [calibrate: identity]  →  records
 ```
 
 | In scope now | Later (designed for, not built) |
 |---|---|
-| ROS-free core; thin ROS node; offline CLI over recorded sessions | YOLO detector loading a model file (`detectors/yolo.py`) |
-| Dummy detector reproducing the GCS dummy, labelled dummy everywhere | Confidence calibration on held-out data (temperature / Platt, R11) |
-| Detections on `/sss_ai/detections` (existing GCS slot) + per-image records | Labels from real imagery (an annotation source) |
-| Dataset-creation **mode** and writer, with YOLO labels from simulator ground truth (2026-10-16, §7) | Training (out of scope here) |
+| ROS-free core; thin ROS node; offline CLI over recorded sessions | Confidence calibration on held-out simulated worlds (temperature / Platt, R11) |
+| Dummy detector reproducing the GCS dummy, labelled dummy everywhere (still the default) | Labels from real imagery (an annotation source) |
+| **YOLO detector over across-track tiles** (Ultralytics, YOLO11s / YOLO26s; 2026-10-23, §4.4, §4.10) | Trained weights: built by the owner's simulated worlds (§15) |
+| Detections on `/sss_ai/detections` (existing GCS slot) + per-image records | |
+| Dataset-creation **mode** and writer, with YOLO labels from simulator ground truth (2026-10-16, §7); **tile datasets**, training and evaluation tools (2026-10-23, §7.1, §15) | |
 | Identity preprocessing stage + the study | Any image-changing preprocessing, after your Phase 4 decision |
 
 **Not Perception's job:**
@@ -215,18 +216,24 @@ Rules:
     convention, then row time). A test checks this against `detections` in the saved
     metadata on all on-disk sessions;
   - `is_dummy = True` puts `"dummy": true` in every record and detection.
-- **`YoloDetector` (stub; interface only).** Constructor takes `model_path`, `input_size`,
-  `tile_stride`, `score_threshold`, `nms_iou`; `detect` raises `NotImplementedError`.
-  Documented constraints:
-  - YOLO resizes its input to a fixed square [R10 fig. 1], and our tiles are 256 × W
-    (W up to 2402), so the adapter must **tile** across-track, never squash, and merge
-    across tiles;
-  - box format: YOLO-normalised `xywh` [R10 §2.2];
+- **`YoloDetector` (2026-10-23; `detectors/yolo.py`).** Ultralytics (PyTorch) behind the
+  same protocol, over across-track tiles (§4.10). The stub's parameter names are kept
+  (`model_path`, `input_size`, `tile_stride`, `score_threshold`, `nms_iou`), plus
+  `tiling` (`tiles` | `full`), `tile_size`, `min_valid_fraction`, `merge`,
+  `merge_threshold`, `max_det_tile`, `device`, `seed`.
+  - YOLO resizes its input to a fixed square [R10 fig. 1]; the picture is 256 × W
+    (W up to 2402), so the adapter **tiles** across track at native resolution and merges
+    across tiles; `tiling: full` letterboxes the whole strip (the comparison baseline);
   - its score is `Pr(Object)·IOU` or `Pr(Class)·IOU`, **not a calibrated probability**
-    [R10 §2 eq. 1], hence §4.5;
-  - weaker on small objects and groups [R10 §2.4].
-  - There is no ML runtime on this machine (no torch, ultralytics, onnxruntime or GPU).
-    Choosing one is a later decision.
+    [R10 §2 eq. 1], hence §4.5; the detector threshold is low (0.01) on purpose, and
+    only the GCS map applies a display cut (`map_min_confidence` 0.10, §5);
+  - weaker on small objects and groups [R10 §2.4];
+  - `ultralytics` and `torch` are imported only when a YOLO detector is built (the import
+    sweep blocks them); tests inject a fake `runtime`. Ultralytics becomes a superproject
+    dependency later (owner, 2026-10-23); a weights file is `detector_model`.
+  - Both families predict through the one-to-many head with NMS by default [S1
+    `models/yolo26`], so the in-tile NMS (`nms_iou` 0.7, Ultralytics' default) applies to
+    YOLO11 and YOLO26 alike.
 
 ### 4.5 Calibration — `core/calibration.py`
 - **Protocol:** `Calibrator.calibrate(score_raw, logit, class_id) -> float in [0, 1]`,
@@ -277,6 +284,60 @@ pictures" folder (`seabed_images_<log>/`) in `image_id` order. It builds
 `SeabedImageInput` from `metadata/*.json` + `*_world.npz` (+ PNG). `stream_id` comes from
 the metadata (schema ≥ 5), else `session:<folder name>`. Read-only (CM-7, NC #6).
 
+### 4.10 Tiling and merging — `core/tiling.py`, `core/merge.py` (owner's decisions, 2026-10-23)
+- **Tiles.** 256 × 256 px at native resolution, never resized; a tile spans the picture
+  height (256 rows), so tiling is across track only — the GCS already overlaps
+  consecutive pictures by 50 % along track. Starts `0, S, 2S, …` while `start + T ≤ W`,
+  plus a flush tile at `W − T`, so no column is lost (W = 2400: 18 tiles, the last at
+  2144). The nadir stays in the tiles (one continuous strip). Stride 128 (50 %) by
+  default; 64 is a comparison arm. Sliding square windows across track with overlap are
+  established practice for SSS detection [R23 §2.1.2: 320 × 320, 40 % overlap] and for
+  tiled detection generally [R13 §3; R25 §4.2–4.3].
+- **Short or narrow pictures.** The last picture of a run has 2–255 rows (the GCS's
+  flush): tiles are padded below the oldest row with invalid zeros, detections wholly in
+  padding are dropped and the rest clipped; the record is produced as for any picture.
+  A picture narrower than a tile is padded on the right the same way.
+- **Skips.** A tile is skipped only when its valid share is below `min_valid_fraction`
+  (0.001); the nadir band is valid data. Skips are counted (`summary.detector_tiles`).
+- **One picture in, one record out.** Each tile's boxes are shifted by the tile's column
+  offset, merged, turned into inclusive integer pixel boxes (edges rounded half up), and
+  then go through the existing calibration, georeferencing (box **centre** = object +
+  shadow, so `world_xy` sits mid-box, i.e. outward of the object by half its shadow —
+  accepted, owner 2026-10-23), turn flags, uncertainty and record path unchanged. No
+  tracking across pictures (Belief's job). At most 999 detections per picture
+  (`MAX_DETECTIONS`, the uid range), in descending score; the cut is counted
+  (`processing.detector.capped`).
+- **Merging (two rules, chosen by evidence).** An object up to 129 px wide lies whole in
+  at least one tile, but a highlight + shadow box can be wider [R13 §3: larger objects
+  "may not fit within a slice"], so it appears as partial boxes in neighbouring tiles.
+  - `nms`: per-class NMS at IoU 0.5 — the SAHI paper's merge [R13 §3–4] and Yu et al.'s
+    [R23 §3.3.2]. A piece cut by a tile edge can have IoU < 0.5 with the whole box and
+    survive as a duplicate (tested).
+  - `greedy_nmm`: greedy merging on intersection-over-smaller ≥ 0.5, merged box = union,
+    **score = max** of the group (the SAHI software [S2]; not in the paper, so
+    `[engineering]`). Ünel et al. merge on a 25 % intersection [R25 §4.3]. Known
+    limitation: the anchor of a group is its best-scored box; if a cut piece outscores the
+    whole box, a far piece that does not overlap that piece stays separate (tested with a
+    tie). At a low detector threshold, weak boxes can also join a group and widen the
+    union (seen in the smoke run, not a result).
+  - **Decision: pending the comparison** on held-out simulated worlds (§15); `nms` is
+    the default until then. The decision and its evidence go here.
+- **Determinism (offline = live).** Same picture + same weights + same machine → the same
+  record: tiles in column order, one batch per picture, seed fixed,
+  `torch.use_deterministic_algorithms` (warn-only), CPU by default; boxes rounded to
+  1e-3 px and scores to 1e-6 before merging, inclusive integer boxes after. Byte equality
+  is tested on CPU with real Ultralytics (YOLO11n / YOLO26n, untrained) and with a fake
+  runtime. GPU inference, or another CPU, may differ in the last bits of a score; the
+  record states the device.
+- **What the record names** (additive, `topics.md` §4): `processing.detector.params` —
+  weights file name and SHA-256, the model card (family, dataset, seed) from
+  `model.json`, runtime and library versions, device, tiling, input size, thresholds,
+  merge rule and rounding; `summary.detector_tiles` — tiles cut / skipped, boxes in
+  padding, before / after merge; `processing.detector.capped`. A YOLO detector without
+  a detector input (`identity` without its PNG) gives `status: no_detector_input` and
+  `detections: null` (unknown, never "searched, nothing found"). The dummy's records are
+  byte-identical to before (checked against the unmodified code).
+
 ## 5. Outputs (summary; full contract in `topics.md`)
 - **`/sss_ai/detections`** (`vision_msgs/Detection2DArray`, one array per image, possibly
   empty) is the GCS's existing slot (`detections_listener.py`). Contents:
@@ -288,6 +349,9 @@ the metadata (schema ≥ 5), else `session:<folder name>`. Read-only (CM-7, NC #
   - `id` = decimal string uid `2_000_000 + 16·image_id + k` (k < 16; a 17th detection of
     one image takes `1_000_000_000 + 1000·image_id + k`), distinct from the station's
     former in-process range `1_000_000 + …`.
+- **Map filter (owner, 2026-10-23):** only detections with `confidence >=
+  map_min_confidence` (0.10) are put on `/sss_ai/detections`; the record keeps every
+  detection above the detector threshold, with the same uids (`pipeline.on_map`).
 - **`/sss_ai/image_records`** (JSON, RELIABLE / KEEP_LAST 100) carries the Belief record
   (§4.7).
 - **`/sss_ai/perception/status`** (JSON, TRANSIENT_LOCAL depth 1, 1 Hz) carries mode,
@@ -310,7 +374,11 @@ cwd. Normally `~/ros2_ws/data/` (file-interfaces skill). Names are claimed exclu
     `detector_input_mapping` (fixed_gray_v1), `near_range_mask_m` (0.0), `turn_window_s` (1.0),
     `calibration` (identity), `sigma_h_m`, `sigma_heading_deg`, `sigma_nav_m`,
     `footprint_row_step`, `label_source` (auto | none), `label_min_rows` (3),
-    `label_wait_s` (3.0).
+    `label_wait_s` (3.0); since 2026-10-23 `map_min_confidence` (0.10) and the YOLO
+    parameters (`detector_model`, `detector_device`, `detector_tiling`, `tile_size`,
+    `tile_stride`, `tile_min_valid_fraction`, `detector_input_size`,
+    `detector_score_threshold`, `detector_nms_iou`, `merge`, `merge_threshold`,
+    `detector_max_det_tile`; `topics.md` §6). The CLI takes the same names as options.
   - **Ground truth only for the dataset labels (owner's decision, 2026-10-16).** The
     node subscribes to `/side_scan_sonar/ground_truth/{contacts,sensor}` only in
     `mode:=dataset` with a `world_dir`, from `_open_labels`, through
@@ -408,9 +476,50 @@ cwd. Normally `~/ros2_ws/data/` (file-interfaces skill). Names are claimed exclu
   intensity-domain families must not be run on these datasets. The raw dB in `raw/` keeps
   the dataset invertible.
 - **Splits are not made by the writer.** Split by session or site later, never by image:
-  consecutive images overlap 50 % (R12 §4 splits by site for the same reason).
+  consecutive images overlap 50 % (R12 §4 splits by site for the same reason). The tile
+  dataset writer does it, by world (§7.1).
 - Nothing is ever written into a session folder (CM-7). Re-running the same name gets a
   `-2`, `-3`, … suffix (O_EXCL), never an overwrite.
+
+### 7.1 Tile datasets — `tools/make_tile_dataset.py` (2026-10-23)
+- **Input:** dataset-mode folders + a split file (world → `train` / `val` / `test`), never
+  by image [R12 §4]; a world in two splits is refused. The held-out `test` worlds are
+  never used to tune anything.
+- **Same function as inference:** tiles come from `core/tiling.py` applied to the dataset's
+  own training image (the detector input), `valid` rebuilt from the raw dB and the
+  near-range mask; a `fixed_gray` dataset's stored picture must equal the re-mapping of
+  its raw dB bit for bit (else refused).
+- **Visibility rule (owner, 2026-10-23, provisional):** per box, the raw-dB contrast of its
+  highlight and shadow against the background (`tools/label_visibility.py`, shared with
+  `draw_labels.py --stats`): visible if highlight ≥ +2 dB or shadow ≤ −2 dB. Faint boxes
+  are dropped and a unit (tile) holding ≥ 50 % of one is left out of the tile dataset, so
+  the model is never told "faint object = background"; in evaluation they are ignore
+  regions. The simulator's `visible` flag only means taller than 5 mm and lit (renderer
+  `GroundTruthContact`), not a contrast. The 2 dB is to be tuned on the first datasets.
+- **Tile edges, rule B + (i) (owner, 2026-10-23):** a box cut by a tile edge keeps its
+  clipped label when ≥ 50 % of its **highlight** columns are inside and the clipped box is
+  ≥ 4 px wide; otherwise the label is dropped and the tile kept. A highlight up to 129 px
+  wide is whole in some tile at stride 128, so no object is lost. Literature check: the
+  Ultralytics training pipeline does the same on its own crops (boxes keeping < 10 % of
+  their area are dropped, the image kept; S1 `box_candidates`); Ünel et al. train on
+  tiles and accept losing the annotations of objects that do not fit [R25 §4.2]; the
+  SAHI paper and the two sonar papers state no rule [R13, R23, R24]. One tension, noted:
+  Ultralytics' tips page says "All instances … must be labeled. Partial labeling will not
+  work" [S1]; a fragment with < 50 % of its highlight in a tile is such an unlabelled
+  instance. Expected to be rare on a surface vessel (short shadows, owner).
+- **Background:** empty tiles are capped at 10 % of the **train** units (seeded;
+  Ultralytics' "about 0–10 % background images" [S1]); val and test keep every unit.
+- **Class drift:** labels must be `yolo_classes_v1` ids; a dataset whose names differ, a
+  box with a world-only class (id ≥ 29, appended by `sim_labels.classes_for`) or a type
+  disagreeing with its id, and an unlabelled dataset (unless `--unlabelled`) are refused.
+- **Output:** `<root>/data/Tile_data/<name>/` — `data.yaml` (3-channel), `data_gray1.yaml`
+  (`channels: 1`), `images|labels/{train,val,test}`, `manifest.json` (configuration, split,
+  seed, sources with manifest SHA-256, code version, counts, every drop). `--mode full`
+  writes whole pictures for the squeeze baseline.
+- **Aug Studio:** a tile does not start at the nadir, so the Aug Studio's range map (range
+  from the nadir edge) would be wrong on it. Tile sidecars are a new schema
+  (`tile_sidecar/1`) declaring only the intensity mapping and along-track facts; run the
+  Aug Studio on the full-picture dataset.
 
 ## 8. MCS changes (ordered by you, Q3/Q7 and answer 4; built 2026-10-16, additions only)
 - **`LaunchDialog`, Gazebo + Controller source:** a new **Session** row with *Normal
@@ -478,6 +587,10 @@ a module-level `importorskip`). Tests:
 - dataset writer layout + manifest, suffix on name clash, never inside a session;
 - import sweep (no rclpy/Qt in `core/`);
 - no ground-truth subscription in the online sources.
+- (2026-10-23) tiling (starts, coverage, padding, skips), merging (split boxes, order),
+  the YOLO adapter with a fake runtime and, when installed, real Ultralytics (offline =
+  live byte equality), the 999 cap, the map filter, the tile dataset writer (rule B + (i),
+  visibility, background share, class drift), the evaluation (AP, matching, ignore).
 
 Corpus tests skip cleanly without `$BLUEBOAT_DATA_DIR` data.
 
@@ -492,7 +605,7 @@ Corpus tests skip cleanly without `$BLUEBOAT_DATA_DIR` data.
 | CM-7 | Never writes into session folders; dataset and offline outputs in their own roots, O_EXCL names |
 | CM-9 | Records are designed for Belief as the only consumer of evidence (footprint, look directions, empty-image records) |
 | CM-10 | Input is the boat-relative waterfall tile, never a mosaic crop |
-| CM-11 | The dataset mode writes sim datasets; their use is the E7 gap experiment, and the headline detector stays real-trained (P1 §7.6 ⚠) |
+| CM-11 | (Revised 2026-10-20, root `CLAUDE.md`.) The headline detector is a YOLO model trained on simulated datasets (dataset mode → tile datasets), calibrated on held-out simulated worlds; split and calibrate by world. Real data validates later; results are stated "on simulated data" (CM-13) |
 | CM-14 | Offline CLI over recorded sessions gives the same records as live |
 | "Online code never reads sim ground truth" (revised 2026-10-16: except the dataset labels) | Only `ros/ground_truth.py` names the topics, subscribed from the dataset set-up only; the detection path never imports the labeller; records identical with or without labels; test-enforced |
 
@@ -518,10 +631,39 @@ Corpus tests skip cleanly without `$BLUEBOAT_DATA_DIR` data.
 
 ## 14. Open items carried to `.claude/TODO.md`
 - Phase 4 preprocessing decision (STUDY §6).
-- YOLO runtime choice and adapter (tiling, NMS across tiles); the uid's overflow range
-  (k ≥ 16) is in place, a stream-aware uid is not (uids repeat across GCS streams, as the
-  station's did — SSS `TODO.md`).
+- The merge rule decision (§4.10) and the visibility threshold (§7.1), on the first
+  simulated datasets; the uid's overflow range (k ≥ 16) and the 999 cap are in place, a
+  stream-aware uid is not (uids repeat across GCS streams, as the station's did — SSS
+  `TODO.md`).
 - Calibration data split and calibrator fit (R11).
 - Aug Studio intensity-mapping gap (REQUESTS R-3).
 - Measure `σ_nav`, `σ_ψ`, `σ_h` against USBL.
 - Typed messages once Belief exists.
+
+## 15. Training and evaluation — `tools/train_yolo.py`, `tools/evaluate_detector.py` (2026-10-23)
+- **Training:** YOLO11s or YOLO26s from their pretrained checkpoints, seeded,
+  `deterministic=True`, on a tile dataset (`imgsz` 256) or a full-picture dataset (`imgsz`
+  640). Output `<root>/data/Perception_models/<name>/` with `model.json` (family,
+  checkpoint, dataset + manifest SHA-256 + split, seed, every argument, versions, code
+  version, `best.pt` SHA-256). Ultralytics trains on `train` and picks `best.pt` on `val`.
+- **Augmentation, explicit** (Ultralytics' defaults [S1] are for photographs): no hue /
+  saturation (`hsv_h = hsv_s = 0`), mild brightness (`hsv_v` 0.2), no rotation, shear or
+  perspective (they mix range and along-track), `mosaic = mixup = cutmix = copy_paste =
+  0` (they paste other tiles and break the range ↔ pixel relation and the nadir
+  geometry), `scale = 0` (a pixel is one slant bin), `translate = 0` (a shift pads with
+  grey no sonar records). **Flips:** whole-tile `fliplr` / `flipud` 0.5. A left-right flip
+  mirrors the nadir with the object, so the shadow stays on the side away from the nadir
+  (a mirrored port tile is a consistent starboard tile); an up-down flip reverses the
+  along-track order (the boat sailing the other way). Limitation: asymmetric or
+  aspect-dependent echoes appear at another aspect, so flips are off (`--no-flips`) for the
+  heading-response experiment.
+- **Evaluation** on whole pictures of held-out worlds, through the real pipeline (tiling,
+  merge, cap), against the full-picture labels (faint = ignore): AP50, AP50:95 (COCO
+  101-point), per class, recall per slant-range band and per class and false detections
+  per picture at 0.10, latency per picture (CPU; GPU if present). Choices (merge rule and
+  threshold, stride) are made on `val`; `test` is report-only and flagged so.
+- **Arms**, each with YOLO11s and YOLO26s: (a) whole strip letterboxed at 640; (b) tiles
+  256 / stride 128; (c) tiles 256 / stride 64; on (b): merge `nms` vs `greedy_nmm`; and
+  3-channel grey vs single channel. Every result is "on simulated data" (CM-13).
+- **Not now:** upscaled tiles (2× to 512), ground-range resampling [R26: features of
+  consistent width across range; evaluated on matching, not detection], a calibrator.

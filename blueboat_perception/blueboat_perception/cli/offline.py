@@ -38,6 +38,8 @@ from typing import Dict, List, Optional
 from .. import __version__
 from ..core.dataroot import claim_dir, data_root, is_inside, perception_dir, safe_name
 from ..core.dataset import DatasetWriter
+from ..core.detectors.yolo import PARAM_DEFAULTS as YOLO_PARAMS
+from ..core.detectors.yolo import detector_args
 from ..core.pipeline import Pipeline, PipelineConfig
 from ..core.records import canonical_json, comparable_json, read_jsonl
 from ..core.session import images_dir, iter_session, session_name
@@ -116,7 +118,13 @@ def main(argv=None) -> int:
     ap.add_argument("--label-min-rows", type=int, default=3)
     ap.add_argument("--compare", type=Path, nargs="*", default=[],
                     help="live record log(s) to compare against")
-    ap.add_argument("--detector", default="dummy_center")
+    ap.add_argument("--detector", default="dummy_center",
+                    help="dummy_center (default) or yolo (needs --detector-model)")
+    yolo = ap.add_argument_group("YOLO detector (--detector yolo; node parameters of the "
+                                 "same names, docs/topics.md §6)")
+    for name, default in YOLO_PARAMS.items():
+        yolo.add_argument("--" + name.replace("_", "-"), dest=name, default=default,
+                          type=type(default))
     ap.add_argument("--preprocess", default="fixed_gray",
                     help="detector input: fixed_gray (default) or identity (the display PNG)")
     ap.add_argument("--detector-input-mapping", default="fixed_gray_v1")
@@ -148,7 +156,9 @@ def main(argv=None) -> int:
                                        footprint_row_step=args.footprint_row_step,
                                        detector_input_mapping=args.detector_input_mapping,
                                        near_range_mask_m=args.near_range_mask_m,
-                                       turn_window_s=args.turn_window_s))
+                                       turn_window_s=args.turn_window_s,
+                                       detector_args=detector_args(args.detector,
+                                                                   vars(args))))
     if (args.world is None) != (args.ground_truth_bag is None) or \
             (args.world is not None and not args.dataset):
         print("--world and --ground-truth-bag go together, with --dataset", file=sys.stderr)

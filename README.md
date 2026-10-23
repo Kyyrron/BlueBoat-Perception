@@ -4,7 +4,7 @@ Seabed images in, detections and image records out, for the BlueBoat
 aspect-aware side-scan sonar survey.
 
 ```
-GCS seabed image + metadata  ->  preprocess (fixed_gray)  ->  detector (dummy; YOLO later)
+GCS seabed image + metadata  ->  preprocess (fixed_gray)  ->  detector (dummy, or YOLO over 256x256 tiles)
                              ->  calibration (identity)  ->  detections (/sss_ai/detections)
                                                           +  one record per image (/sss_ai/image_records)
 ```
@@ -36,7 +36,92 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /usr/bin/python3 -m pytest
 ```
 
 Outputs go under `<root>/data/` (normally `~/ros2_ws/data/`): `Perception_data/live/`,
-`Perception_data/offline/`, `Dataset_data/`. Licence: Apache-2.0.
+`Perception_data/offline/`, `Dataset_data/`, and, from the offline tools, `Tile_data/`,
+`Perception_models/`, `Perception_eval/`. Licence: Apache-2.0.
+
+## Switching the detector (dummy ↔ YOLO11s ↔ YOLO26s)
+
+The detector is one parameter, `detector`, in `blueboat_perception/config/perception.yaml`
+(node) or `--detector` (offline CLI). Nothing else changes: same topics, same records.
+
+| Detector | Set | Notes |
+|---|---|---|
+| **Dummy** (default) | `detector: dummy_center` | the station's former dummy: one point at the picture centre, score 0.5, `"dummy": true` everywhere. No model, no Ultralytics needed |
+| **YOLO11s** | `detector: yolo`, `detector_model: <root>/data/Perception_models/<a YOLO11s run>/weights/best.pt` | needs `ultralytics` + `torch` importable by the node's Python |
+| **YOLO26s** | the same, `detector_model:` a YOLO26s run's `best.pt` | the family is read from the weights; the record says which (`processing.detector.params.model.card.family`) |
+
+YOLO11s and YOLO26s differ only by the weights file: which family a run is depends on the
+`--model` it was trained from (`yolo11s.pt` or `yolo26s.pt`, below). Back to the dummy:
+`detector: dummy_center` (the `detector_model` line is then ignored).
+
+```yaml
+# config/perception.yaml (then colcon build, or pass the same keys with -p on the node)
+detector: yolo
+detector_model: /home/<you>/ros2_ws/data/Perception_models/yolo26s-tiles128-s0/weights/best.pt
+detector_device: cpu          # cpu = reproducible (offline = live); cuda:0 for a GPU
+merge: nms                    # or greedy_nmm, once the comparison has chosen
+map_min_confidence: 0.10      # what the GCS map draws; the records keep every detection
+```
+```bash
+# the same without editing the file
+ros2 launch blueboat_perception perception_launch.py   # uses the yaml
+ros2 run blueboat_perception perception_node --ros-args --params-file <perception.yaml> \
+    -p detector:=yolo -p detector_model:=<best.pt>
+# offline over a session
+python3 -m blueboat_perception.cli.offline <session> --detector yolo --detector-model <best.pt>
+```
+
+**How YOLO sees a picture.** A picture is 256 rows × 1200–2402 slant bins. It is cut into
+256 × 256 tiles at native resolution (never resized), stride 128 across track, the nadir
+kept; every tile goes to YOLO at `imgsz` 256 in one batch; the boxes are shifted back to
+picture pixels and the overlapping tiles' duplicates merged (`merge`). One record per
+picture, as with the dummy. Details: `docs/DESIGN.md` §4.10.
+
+## Training and comparing YOLO11s / YOLO26s (offline tools, not installed)
+
+All results are **on simulated data**: the datasets come from dataset mode in simulator
+worlds; split by world, never by image; the test worlds are never used to tune anything.
+
+```bash
+cd ~/ros2_ws/src/BlueBoat-SideScanSonar/BlueBoat-Perception
+# 0. datasets: one dataset-mode run per world (MCS: launch dialog, Session = Dataset creation)
+#    -> ~/ros2_ws/data/Dataset_data/<YYYY_MM_DD-HH_MM_SS>-<note>/
+# 1. a split file, by world folder name (or dataset folder name):
+cat > split.yaml <<'YAML'
+train: [world_a, world_b, world_c, world_d, world_e, world_f]
+val:   [world_g, world_h]
+test:  [world_i, world_j]
+YAML
+DS=~/ros2_ws/data/Dataset_data
+# 2. tile datasets (one per arm), and the full-picture baseline
+python3 tools/make_tile_dataset.py $DS/* --split split.yaml --name tiles128
+python3 tools/make_tile_dataset.py $DS/* --split split.yaml --name tiles64 --stride 64
+python3 tools/make_tile_dataset.py $DS/* --split split.yaml --name full --mode full
+# 3. train (seeded; add --device 0 on a GPU); repeat with --model yolo26s.pt
+T=~/ros2_ws/data/Tile_data
+python3 tools/train_yolo.py --data $T/tiles128/data.yaml --model yolo11s.pt --name y11s-t128-s0
+python3 tools/train_yolo.py --data $T/tiles128/data.yaml --model yolo26s.pt --name y26s-t128-s0
+python3 tools/train_yolo.py --data $T/tiles64/data.yaml  --model yolo11s.pt --name y11s-t64-s0
+python3 tools/train_yolo.py --data $T/full/data.yaml --imgsz 640 --model yolo11s.pt --name y11s-full-s0
+python3 tools/train_yolo.py --data $T/tiles128/data_gray1.yaml --model yolo11s.pt --name y11s-t128-g1-s0
+# 4. evaluate on the val worlds (choose merge rule / threshold here), then once on test
+M=~/ros2_ws/data/Perception_models
+python3 tools/evaluate_detector.py $DS/* --split split.yaml --on val --name y11s-t128-nms \
+    --detector yolo --detector-model $M/y11s-t128-s0/weights/best.pt --merge nms
+python3 tools/evaluate_detector.py $DS/* --split split.yaml --on val --name y11s-t128-gnmm \
+    --detector yolo --detector-model $M/y11s-t128-s0/weights/best.pt --merge greedy_nmm
+python3 tools/evaluate_detector.py $DS/* --split split.yaml --on val --name y11s-full \
+    --detector yolo --detector-model $M/y11s-full-s0/weights/best.pt --detector-tiling full
+python3 tools/evaluate_detector.py $DS/* --split split.yaml --on val --name y11s-t64 \
+    --detector yolo --detector-model $M/y11s-t64-s0/weights/best.pt --tile-stride 64
+# ... the same for the YOLO26s runs; after the choices are fixed, the same commands with --on test
+```
+Each step writes a JSON beside its output (`manifest.json`, `model.json`,
+`results.json`): configuration, dataset and world split, seed, model, library and code
+versions. Augmentation is set explicitly in `tools/train_yolo.py` (no hue / saturation,
+rotation, shear, perspective, mosaic, scale or translate; whole-tile flips only;
+`--no-flips` for the heading-response experiment). `tools/draw_labels.py DATASET --out DIR
+--stats` shows the label boxes and each box's visibility class (2 dB rule).
 
 ## What is in `Perception_data/`
 

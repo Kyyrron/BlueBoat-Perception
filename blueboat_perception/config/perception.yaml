@@ -4,7 +4,25 @@ perception:
   ros__parameters:
     record_log: true          # <root>/data/Perception_data/live/<stream_id>.jsonl
     join_timeout_s: 5.0       # release an incomplete image key after this
-    detector: dummy_center    # the station's former in-process dummy
+    # Detector: dummy_center (the station's former in-process dummy, default) or
+    # yolo (Ultralytics weights in detector_model; README "Switching the detector").
+    detector: dummy_center
+    # --- yolo only (core/detectors/yolo.py, docs/DESIGN.md §4.4) ---
+    detector_model: ""                 # weights file, e.g. <root>/data/Perception_models/<name>/weights/best.pt
+    detector_device: cpu               # cpu (reproducible) | cuda:0
+    detector_tiling: tiles             # tiles (256 x 256 across track) | full (squeeze baseline)
+    tile_size: 256                     # px, native resolution, never resized
+    tile_stride: 128                   # px (50 % overlap); 64 is the comparison arm
+    tile_min_valid_fraction: 0.001     # skip a tile only when essentially empty (counted)
+    detector_input_size: 0             # 0 = 256 for tiles, 640 for full
+    detector_score_threshold: 0.01     # low on purpose: the cut belongs to calibration / Belief
+    detector_nms_iou: 0.7              # Ultralytics' in-tile NMS
+    merge: nms                         # nms | greedy_nmm (merging the overlapping tiles' boxes)
+    merge_threshold: 0.5               # IoU (nms) or intersection-over-smaller (greedy_nmm)
+    detector_max_det_tile: 300
+    # Only detections with confidence >= this go on the GCS map (/sss_ai/detections);
+    # the records keep every detection (owner, 2026-10-23).
+    map_min_confidence: 0.10
     # Detector input (PREPROCESSING_STUDY.md §6): fixed_gray = one fixed mapping of
     # the raw dB (decision 6.4, parameters in core/data/<mapping>.json, fitted on
     # real data); identity = the GCS display PNG as is (the baseline).
