@@ -137,7 +137,7 @@ Record at 65 s and STOP at 190 s. Perception ran the installed build with
 
 | | Result |
 |---|---|
-| Dataset | 21 images, 21 label files, `data.yaml` with the 29 World Builder classes (`nc: 29`), the archival `ground_truth_bag/` closed (`metadata.yaml` present) |
+| Dataset | 21 images, 21 label files, `data.yaml` with the world's object types (`nc` = the number of distinct types in the world, ids from 0), the archival `ground_truth_bag/` closed (`metadata.yaml` present) |
 | Labels | **41 boxes over 16 images** (5 background images); 9 classes: bottle_plastic 4, can 9, concrete_block 5, cylinder_metal 2, debris 4, pipe_pvc 5, rope 6, tent_weight 2, tire_car 4; 8 truncated at a picture edge; 0 ghosts or walls in this world |
 | Ground-truth coverage | complete for 20 images. The 21st (the stream's last, after STOP) waited the 3 s for a next ping that never came, and was written with what had arrived |
 | **Offline = live, labels** | the CLI over the GCS session with `--world --ground-truth-bag`: **20 / 20 label files byte-identical**, 20 / 20 sidecar label details identical, 20 / 20 training images identical. The 21st image is not in the session (made after Record OFF) |

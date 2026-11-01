@@ -169,6 +169,7 @@ def main(argv=None) -> int:
             "dataset": {"data_yaml": str(data), "name": man.get("name"),
                         "manifest_sha256": hashlib.sha256(mtext.encode()).hexdigest(),
                         "mode": man.get("mode"), "tiling": man.get("tiling"),
+                        "classes": man.get("classes"),
                         "splits": man.get("splits"), "rules": man.get("rules"),
                         "channels": 1 if "channels: 1" in data.read_text() else 3},
             "seed": a.seed, "train_args": train_args, "augmentation": aug,

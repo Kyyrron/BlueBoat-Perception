@@ -18,7 +18,7 @@ session), never by image (Sethuraman et al. 2024 §4, R12)::
 Output: ``<root>/data/Tile_data/<NAME>/`` (claimed exclusively, ``-2`` ... on a
 clash; nothing is ever overwritten, no input is modified):
 
-    data.yaml            Ultralytics: images/{train,val,test}, nc 29, names = yolo_classes_v1
+    data.yaml            Ultralytics: images/{train,val,test}, nc and names = the union of the datasets' class names
     data_gray1.yaml      the same with ``channels: 1`` (the single-channel arm)
     images/<split>/<unit>.png   the detector input (``images/`` of the source), tiled
     images/<split>/<unit>.json  tile sidecar (blueboat_perception/tile_sidecar/1)
@@ -50,11 +50,15 @@ equal it bit for bit (else the dataset was made with another mapping: refused).
   0-10 % background images") caps the share of empty units in **train**,
   sampled with ``--seed``; val and test keep every unit.
 
-**Class drift.** Labels must use the frozen ``yolo_classes_v1`` ids: a dataset
-whose ``data.yaml`` names differ from it, a box whose class id is >= 29 (a
-world type appended by ``sim_labels.classes_for``) or whose type disagrees
-with its id is refused; a dataset without labels (``label_source: none``,
-e.g. a world that failed to load) is refused unless ``--unlabelled``.
+**Classes.** Every dataset defines its own classes from 0 (the object types of its
+world, ``sim_labels.classes_for``), so ids differ between datasets and only the name
+is stable. This tool joins datasets **by name**: the tile dataset's class list is the
+sorted union of the names of all input datasets (every split, so train / val / test
+share one id space; ``--classes FILE`` fixes the list instead) and each label is
+remapped through its own dataset's map. A box whose ``type`` disagrees with its
+dataset's name for that id is refused (a corrupt dataset); a class with no train
+example is reported. A dataset without labels (``label_source: none``, e.g. a world
+that failed to load) is refused unless ``--unlabelled``.
 
 **Aug Studio.** Tile sidecars carry only the intensity declaration
 (``intensity_mapping: log``, ``log_range_db``) and the along-track facts: a
@@ -86,7 +90,6 @@ from blueboat_perception import __version__  # noqa: E402
 from blueboat_perception.core.dataroot import claim_dir, data_root, safe_name  # noqa: E402
 from blueboat_perception.core.image import SeabedImageInput  # noqa: E402
 from blueboat_perception.core.preprocess import make_preprocessor, near_range_mask  # noqa: E402
-from blueboat_perception.core.sim_labels import load_class_map  # noqa: E402
 from blueboat_perception.core.tiling import TilingConfig, cut_tiles  # noqa: E402
 from label_visibility import (DEFAULT_MIN_SHADOW_M, DEFAULT_THRESHOLD_DB,  # noqa: E402
                               box_contrast, classify)
@@ -94,7 +97,6 @@ from label_visibility import (DEFAULT_MIN_SHADOW_M, DEFAULT_THRESHOLD_DB,  # noq
 MANIFEST_SCHEMA = "blueboat_perception/tile_dataset_manifest/1"
 SIDECAR_SCHEMA = "blueboat_perception/tile_sidecar/1"
 SPLITS = ("train", "val", "test")
-CLASS_MAP = "yolo_classes_v1"
 #: AcquisitionMeta fields that stay true for a tile (no across-track geometry)
 TILE_META_FIELDS = ("intensity_mapping", "log_range_db", "altitude_m", "res_along_m",
                     "speed_mps", "heading_deg", "depth_m", "prf_hz", "timestamp")
@@ -152,35 +154,47 @@ def split_of(ds: Path, manifest: dict, split: Dict[str, str]) -> Tuple[str, str]
     return hits[key], key
 
 
-def check_classes(ds: Path, manifest: dict, v1: List[str], unlabelled: bool) -> bool:
-    """Whether the dataset is labelled; refuses class drift (module docstring)."""
+def dataset_names(ds: Path) -> Dict[int, str]:
+    """{local id: class name} from the dataset's own ``data.yaml``."""
     import yaml
     doc = yaml.safe_load((ds / "data.yaml").read_text(encoding="utf-8")) or {}
     names = doc.get("names") or {}
-    names = ({int(k): str(v) for k, v in names.items()} if isinstance(names, dict)
-             else {i: str(v) for i, v in enumerate(names)})
+    return ({int(k): str(v) for k, v in names.items()} if isinstance(names, dict)
+            else {i: str(v) for i, v in enumerate(names)})
+
+
+def check_classes(ds: Path, manifest: dict, unlabelled: bool) -> Optional[Dict[int, str]]:
+    """The dataset's {id: name}, or None for an unlabelled one (refused without the flag)."""
+    names = dataset_names(ds)
     if not names or manifest.get("label_source") in (None, "none"):
         if not unlabelled:
             raise DatasetRefused(f"{ds.name}: no labels (label_source "
                                  f"{manifest.get('label_source')!r}); pass --unlabelled to "
                                  "write background-only tiles")
-        return False
-    first = [names.get(i) for i in range(len(v1))]
-    if first != v1:
-        raise DatasetRefused(f"{ds.name}: data.yaml classes differ from {CLASS_MAP} "
-                             f"(class drift): {first}")
-    extra = {i: n for i, n in names.items() if i >= len(v1)}
-    if extra:
-        print(f"{ds.name}: world-only classes appended after the 29 ({extra}); boxes of "
-              "those classes are refused", file=sys.stderr)
-    return True
+        return None
+    return names
 
 
-def check_box_class(ds: Path, stem: str, b: dict, v1: List[str]) -> None:
+def unify_classes(sources, fixed: Optional[List[str]] = None) -> List[str]:
+    """The tile dataset's class list: the sorted union of the datasets' names (or the
+    fixed list, which must contain every name); sets each source's ``remap``."""
+    union = sorted({n for s in sources if s["names"] for n in s["names"].values()})
+    if fixed is not None:
+        missing = [n for n in union if n not in fixed]
+        if missing:
+            raise DatasetRefused(f"--classes lacks {missing}, present in the datasets")
+        union = list(fixed)
+    ids = {n: i for i, n in enumerate(union)}
+    for s in sources:
+        s["remap"] = ({k: ids[n] for k, n in s["names"].items()} if s["names"] else {})
+    return union
+
+
+def check_box_class(ds: Path, stem: str, b: dict, names: Dict[int, str]) -> None:
     cid = int(b["class_id"])
-    if cid >= len(v1) or v1[cid] != b.get("type"):
+    if names.get(cid) != b.get("type"):
         raise DatasetRefused(f"{ds.name}/{stem}: box class {cid} {b.get('type')!r} is not "
-                             f"{CLASS_MAP} (class drift; a new class needs yolo_classes_v2)")
+                             f"{names.get(cid)!r} in the dataset's own data.yaml")
 
 
 def picture(ds: Path, stem: str, manifest: dict):
@@ -265,7 +279,7 @@ def full_labels(boxes: List[dict], vis: List[str], H: int, W: int):
     return lines, {"labels": len(lines), "dropped_partial": 0, "dropped_narrow": 0}, exclude
 
 
-def plan_units(sources, a, v1, counts) -> List[dict]:
+def plan_units(sources, a, counts) -> List[dict]:
     """Pass 1: every unit (tile or picture) with its labels, nothing written."""
     cfg = TilingConfig(a.tile, a.stride, a.min_valid_fraction)
     units: List[dict] = []
@@ -280,7 +294,8 @@ def plan_units(sources, a, v1, counts) -> List[dict]:
             boxes = (((sidecar.get("perception") or {}).get("labels") or {}).get("boxes") or []
                      if labelled else [])
             for b in boxes:
-                check_box_class(ds, stem, b, v1)
+                check_box_class(ds, stem, b, src["names"])
+            boxes = [dict(b, class_id=src["remap"][int(b["class_id"])]) for b in boxes]
             vis = [classify(box_contrast(img.db, boxes, b), float(b.get("shadow_m") or 0.0),
                             a.visibility_db, DEFAULT_MIN_SHADOW_M) for b in boxes]
             for v in vis:
@@ -382,6 +397,8 @@ def data_yaml(names: List[str], splits: List[str], channels: int) -> str:
     lines = [f"{s}: images/{s}" for s in splits]
     if channels == 1:
         lines.append("channels: 1")
+    if not names:
+        return head + "\n".join(lines) + "\nnc: 0\nnames: {}\n"
     return (head + "\n".join(lines) + f"\nnc: {len(names)}\nnames:\n"
             + "".join(f"  {i}: {n}\n" for i, n in enumerate(names)))
 
@@ -404,11 +421,13 @@ def main(argv=None) -> int:
     ap.add_argument("--empty-fraction", type=float, default=0.10)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--unlabelled", action="store_true")
+    ap.add_argument("--classes", type=Path, default=None,
+                    help="YAML/JSON list (or {names: [...]}) fixing the class list and order "
+                         "instead of the union of the datasets' names")
     ap.add_argument("--no-verify", action="store_true",
                     help="skip the bit-exact check of the stored detector input")
     a = ap.parse_args(argv)
 
-    v1 = load_class_map(CLASS_MAP)
     split = load_split(a.split)
     sources = []
     for i, ds in enumerate(a.datasets):
@@ -416,10 +435,16 @@ def main(argv=None) -> int:
         mtext = (ds / "manifest.json").read_text(encoding="utf-8")
         manifest = json.loads(mtext)
         s, key = split_of(ds, manifest, split)
-        labelled = check_classes(ds, manifest, v1, a.unlabelled)
+        names = check_classes(ds, manifest, a.unlabelled)
         sources.append({"index": i, "dir": ds, "manifest": manifest, "split": s, "key": key,
-                        "labelled": labelled,
+                        "labelled": names is not None, "names": names,
                         "manifest_sha256": hashlib.sha256(mtext.encode()).hexdigest()})
+    fixed = None
+    if a.classes:
+        import yaml
+        doc = yaml.safe_load(a.classes.read_text(encoding="utf-8"))
+        fixed = [str(n) for n in (doc.get("names") if isinstance(doc, dict) else doc)]
+    classes = unify_classes(sources, fixed)
     used = sorted({s["split"] for s in sources}, key=SPLITS.index)
     if "train" not in used or "val" not in used:
         print("warning: no train or no val dataset", file=sys.stderr)
@@ -430,7 +455,7 @@ def main(argv=None) -> int:
                 "boxes_visible": 0, "boxes_faint": 0, "boxes_unmeasurable": 0,
                 "tiles_skipped": 0, "empty_dropped": 0, "by_class": {}}
     counts = {s: zero() for s in SPLITS}
-    units = plan_units(sources, a, v1, counts)
+    units = plan_units(sources, a, counts)
     units = sample_empty(units, a.empty_fraction, a.seed, counts)
 
     root = data_root(a.data_dir)
@@ -439,8 +464,12 @@ def main(argv=None) -> int:
         (out / "images" / s).mkdir(parents=True)
         (out / "labels" / s).mkdir(parents=True)
     write_units(out, units, sources, a, counts)
-    (out / "data.yaml").write_text(data_yaml(v1, used, 3), encoding="utf-8")
-    (out / "data_gray1.yaml").write_text(data_yaml(v1, used, 1), encoding="utf-8")
+    trained = {classes[k] for k in counts["train"]["by_class"] if k < len(classes)}
+    for n in classes:
+        if n not in trained:
+            print(f"warning: class {n!r} has no train example", file=sys.stderr)
+    (out / "data.yaml").write_text(data_yaml(classes, used, 3), encoding="utf-8")
+    (out / "data_gray1.yaml").write_text(data_yaml(classes, used, 1), encoding="utf-8")
     manifest = {
         "schema": MANIFEST_SCHEMA, "name": out.name, "created_utc": _utc(),
         "code": code_version(), "seed": a.seed, "mode": a.mode,
@@ -454,7 +483,10 @@ def main(argv=None) -> int:
                                "else drop the label, keep the tile",
                   "min_highlight_fraction": a.min_highlight_fraction,
                   "min_width_px": a.min_width_px, "empty_fraction_train": a.empty_fraction},
-        "classes": {"map": CLASS_MAP, "nc": len(v1)},
+        "classes": {"source": "union_by_name" if fixed is None else "classes_file",
+                    "nc": len(classes), "names": classes,
+                    "per_dataset": {s["dir"].name: {str(k): n for k, n in (s["names"] or {}).items()}
+                                    for s in sources}},
         "splits": {s: sorted({src["key"] for src in sources if src["split"] == s})
                    for s in used},
         "sources": [{"dir": str(s["dir"]), "name": s["dir"].name, "split": s["split"],
@@ -462,7 +494,7 @@ def main(argv=None) -> int:
                      "label_source": s["manifest"].get("label_source"),
                      "detector_input": s["manifest"].get("detector_input"),
                      "manifest_sha256": s["manifest_sha256"]} for s in sources],
-        "counts": {s: dict(c, by_class={v1[k] if k < len(v1) else str(k): n
+        "counts": {s: dict(c, by_class={classes[k] if k < len(classes) else str(k): n
                                          for k, n in sorted(c["by_class"].items())})
                    for s, c in counts.items()},
         "config": {k: (str(v) if isinstance(v, Path) else

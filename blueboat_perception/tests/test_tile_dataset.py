@@ -21,7 +21,12 @@ from conftest import PKG_ROOT, PY_PKG, envelope, make_metadata
 TOOLS = PKG_ROOT.parent / "tools"
 NEEDS = [m for m in ("cv2", "yaml") if importlib.util.find_spec(m) is None]
 pytestmark = pytest.mark.skipif(bool(NEEDS), reason=f"needs {NEEDS}")
-V1 = SL.load_class_map()
+V1 = SL.load_class_map()          # LEGACY list: only names for the fixtures
+SORTED = sorted(V1)               # the tool's unified ids: sorted union of names
+
+
+def uid(cls):
+    return SORTED.index(V1[cls])
 H, W = 256, 1200
 
 
@@ -119,7 +124,7 @@ def test_rule_b_i_visibility_and_background_share(tmp_path):
     assert sorted(lt) == ["w_train__gcs-20261016T000000Z-abcd_00000_c0256",
                           "w_train__gcs-20261016T000000Z-abcd_00000_c0384"]
     whole = lt["w_train__gcs-20261016T000000Z-abcd_00000_c0256"][0].split()
-    assert whole[0] == "4"
+    assert whole[0] == str(uid(4))
     assert float(whole[3]) == pytest.approx(171 / 256, abs=1e-6)      # [300, 470] whole
     clipped = lt["w_train__gcs-20261016T000000Z-abcd_00000_c0384"][0].split()
     assert float(clipped[3]) == pytest.approx(87 / 256, abs=1e-6)     # [384, 470]: shadow cut
@@ -130,7 +135,8 @@ def test_rule_b_i_visibility_and_background_share(tmp_path):
     # val keeps every unit (minus the faint-excluded ones): 9 tiles - 2
     assert len(lv) == 7 and sum(1 for v in lv.values() if v) == 2
     assert man["splits"] == {"train": ["world_a"], "val": ["world_b"]}
-    assert man["classes"] == {"map": "yolo_classes_v1", "nc": 29}
+    assert man["classes"]["source"] == "union_by_name" and man["classes"]["nc"] == 29
+    assert man["classes"]["names"] == SORTED
     assert man["data"] == "simulated" and man["seed"] == 0
     y = (out / "data.yaml").read_text()
     assert "train: images/train" in y and "nc: 29" in y and "channels" not in y
@@ -198,27 +204,55 @@ def test_split_errors(tmp_path):
         run_tool(tmp_path, [tr], split_file(tmp_path, {"train": ["world_a"]}))
 
 
-# ------------------------------------------------------------------ class drift
-def test_a_world_only_class_is_refused(tmp_path):
-    m = _tool()
-    db, boxes = scene()
-    classes = {**{i: n for i, n in enumerate(V1)}, 29: "zz_new"}
-    boxes = {0: [box(300, 470, 430, 470, 40, 89, cls=29)]}
-    tr = make_dataset(tmp_path / "root", "w", boxes, db, world="/worlds/world_a",
-                      classes=classes)
-    with pytest.raises(m.DatasetRefused, match="class drift"):
-        run_tool(tmp_path, [tr], split_file(tmp_path, {"train": ["world_a"]}))
+# ------------------------------------------------------------------ classes
+def test_datasets_with_different_classes_are_joined_by_name(tmp_path):
+    """Each dataset defines its classes from 0 (its world's types); the tool maps
+    them onto one sorted union, train / val / test sharing one id space."""
+    db, _ = scene()
+    ca = {0: "anchor", 1: "can"}
+    cb = {0: "brick", 1: "can", 2: "new_thing"}        # 'can' has another local id
+    ba = {0: [box(300, 470, 430, 470, 40, 89, cls=0)]}
+    ba[0][0]["type"] = "can"; ba[0][0]["class_id"] = 1
+    bb = {0: [box(300, 470, 430, 470, 40, 89, cls=0)]}
+    bb[0][0]["type"] = "new_thing"; bb[0][0]["class_id"] = 2
+    a = make_dataset(tmp_path / "root", "wa", ba, db, world="/worlds/world_a", classes=ca)
+    b = make_dataset(tmp_path / "root", "wb", bb, db, world="/worlds/world_b", classes=cb)
+    out, man = run_tool(tmp_path, [a, b],
+                        split_file(tmp_path, {"train": ["world_a"], "val": ["world_b"]}),
+                        "--empty-fraction", "1.0")
+    names = ["anchor", "brick", "can", "new_thing"]
+    assert man["classes"]["names"] == names and man["classes"]["nc"] == 4
+    assert man["classes"]["per_dataset"]["wa"] == {"0": "anchor", "1": "can"}
+    y = (out / "data.yaml").read_text()
+    assert "nc: 4" in y and "  2: can" in y and "  3: new_thing" in y
+    ids = lambda split: {ln.split()[0] for ls in labels_of(out, split).values() for ln in ls}
+    assert ids("train") == {"2"} and ids("val") == {"3"}      # by name, not local id
+    assert man["counts"]["train"]["by_class"] == {"can": man["counts"]["train"]["labels"]}
 
 
-def test_renamed_or_reordered_classes_are_refused(tmp_path):
+def test_a_box_whose_type_disagrees_with_its_dataset_map_is_refused(tmp_path):
     m = _tool()
     db, boxes = scene()
     swapped = {i: n for i, n in enumerate(V1)}
-    swapped[0], swapped[1] = swapped[1], swapped[0]
+    swapped[4], swapped[5] = swapped[5], swapped[4]       # the box says V1[4], the map says V1[5]
     tr = make_dataset(tmp_path / "root", "w", boxes, db, world="/worlds/world_a",
                       classes=swapped)
-    with pytest.raises(m.DatasetRefused, match="class drift"):
+    with pytest.raises(m.DatasetRefused, match="dataset's own data.yaml"):
         run_tool(tmp_path, [tr], split_file(tmp_path, {"train": ["world_a"]}))
+
+
+def test_a_classes_file_fixes_the_list_and_must_cover_the_datasets(tmp_path):
+    m = _tool()
+    db, boxes = scene()
+    tr = make_dataset(tmp_path / "root", "w", boxes, db, world="/worlds/world_a")
+    f = tmp_path / "classes.json"
+    f.write_text(json.dumps({"names": V1}))               # file order, not sorted
+    out, man = run_tool(tmp_path, [tr], split_file(tmp_path, {"val": ["world_a"]}),
+                        "--classes", str(f))
+    assert man["classes"]["names"] == V1 and man["classes"]["source"] == "classes_file"
+    f.write_text(json.dumps({"names": V1[:5]}))
+    with pytest.raises(m.DatasetRefused, match="--classes lacks"):
+        run_tool(tmp_path, [tr], split_file(tmp_path, {"val": ["world_a"]}), "--classes", str(f))
 
 
 def test_an_unlabelled_dataset_needs_the_flag(tmp_path):
@@ -231,17 +265,16 @@ def test_an_unlabelled_dataset_needs_the_flag(tmp_path):
     out, man = run_tool(tmp_path, [tr], split_file(tmp_path, {"val": ["world_a"]}),
                         "--unlabelled")
     assert all(not v for v in labels_of(out, "val").values())
-    assert "names:\n  0: tire_car" in (out / "data.yaml").read_text()   # v1, not {}
+    assert "names: {}" in (out / "data.yaml").read_text()          # no labelled dataset
 
 
-def test_the_simulator_label_source_uses_the_frozen_classes(tmp_path):
+def test_the_simulator_label_source_defines_its_classes_from_the_world(tmp_path):
     """Live (node) and offline (CLI --world --ground-truth-bag) both build
-    SimGroundTruthLabelSource with the default class map: ids 0-28 are v1."""
+    SimGroundTruthLabelSource without a class list: the world's types, sorted, from 0."""
     world = SL.WorldInfo(objects={1: SL.WorldObject(1, "can", 0, 0, 0, 0.1, 0.1, 0.1)},
                          path="x", sha256="0")
     src = SL.SimGroundTruthLabelSource(world, SL.GroundTruthBuffer())
-    assert [src.classes[i] for i in range(29)] == V1 and len(src.classes) == 29
-    # the node and the CLI pass no class list of their own
+    assert src.classes == {0: "can"}
     node = (PY_PKG / "ros" / "perception_node.py").read_text()
     cli = (PY_PKG / "cli" / "offline.py").read_text()
     assert "SimGroundTruthLabelSource(world, self.ground_truth," in node
@@ -250,15 +283,16 @@ def test_the_simulator_label_source_uses_the_frozen_classes(tmp_path):
         assert "class_map=" not in text and "classes=" not in text
 
 
-def test_the_cli_path_writes_v1(tmp_path, monkeypatch):
+def test_the_cli_path_defines_classes_from_the_world(tmp_path, monkeypatch):
     yaml = pytest.importorskip("yaml")
     from blueboat_perception.cli import offline
     (tmp_path / "w").mkdir()
     (tmp_path / "w" / "metadata.yaml").write_text(yaml.safe_dump(
-        {"objects": [{"object_id": 1, "type": "anchor", "x": 0, "y": 0}]}))
+        {"objects": [{"object_id": 1, "type": "anchor", "x": 0, "y": 0},
+                     {"object_id": 2, "type": "can", "x": 1, "y": 0}]}))
     monkeypatch.setattr(offline, "read_ground_truth_bag", lambda bag: iter(()))
     src = offline.ground_truth_labels(tmp_path / "w", tmp_path / "bag")
-    assert [src.classes[i] for i in range(29)] == V1
+    assert src.classes == {0: "anchor", 1: "can"}
 
 
 AUG = Path(__file__).resolve().parents[3] / "SSS-Dataset-Aug-Studio"

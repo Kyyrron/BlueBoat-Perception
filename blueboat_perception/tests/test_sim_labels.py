@@ -129,7 +129,7 @@ def test_box_matches_the_documented_geometry_port():
     assert yb.cy == pytest.approx((p["r0"] + p["r1"] + 1) / 2 / H, abs=1e-6)
     assert yb.w == pytest.approx((p["c1"] - p["c0"] + 1) / W, abs=1e-6)
     assert yb.h == pytest.approx((p["r1"] - p["r0"] + 1) / H, abs=1e-6)
-    assert yb.class_id == SL.load_class_map().index("concrete_block")
+    assert src.classes[yb.class_id] == "concrete_block"
 
 
 def test_starboard_mirrors_port():
@@ -281,29 +281,39 @@ def test_missing_ground_truth_lowers_the_coverage():
 
 
 # ----------------------------------------------------------- classes and world
-def test_class_ids_are_frozen_and_unknown_types_are_appended():
-    base = SL.load_class_map()
-    assert len(base) == 29 and base[0] == "tire_car" and base[-1] == "shopping_trolley"
-    classes = SL.classes_for([obj(typ="can"), obj(typ="zz_new"), obj(typ="aa_new")], base)
-    assert classes[base.index("can")] == "can"
-    assert [classes[29], classes[30]] == ["aa_new", "zz_new"]
+def test_classes_are_the_world_types_sorted_from_zero():
+    classes = SL.classes_for([obj(typ="can"), obj(typ="zz_new"), obj(typ="aa_new"),
+                              obj(typ="can")])
+    assert classes == {0: "aa_new", 1: "can", 2: "zz_new"}
+    assert SL.classes_for([]) == {}
 
 
-@pytest.mark.skipif(not (SIM_REPO / "blueboat_sss_sim" / "worldgen" / "objects.py").is_file(),
-                    reason="the simulator's source is not beside this module")
-def test_the_class_map_is_the_world_builder_catalog():
-    code = ("import sys; sys.path.insert(0, sys.argv[1]);"
-            "from blueboat_sss_sim.worldgen.objects import CATALOG;"
-            "print('\\n'.join(CATALOG))")
-    r = subprocess.run([sys.executable, "-I", "-c", code, str(SIM_REPO)],
-                       capture_output=True, text=True, timeout=120)
-    if r.returncode != 0:
-        pytest.skip(f"simulator not importable: {r.stderr[-200:]}")
-    catalog = r.stdout.split()
-    v1 = SL.load_class_map()
-    # append-only: v1 is a prefix of the catalog; a longer catalog needs a v2 file
-    assert catalog[:len(v1)] == v1
-    assert len(catalog) == len(v1), "the World Builder has new classes: write yolo_classes_v2"
+def test_classes_follow_the_world_whatever_the_simulator_changed():
+    """Removed, renamed or added types: the list is a pure function of the world's
+    objects, ids always 0..n-1, no frozen list to update."""
+    before = SL.classes_for([obj(typ="can"), obj(typ="brick"), obj(typ="anchor")])
+    removed = SL.classes_for([obj(typ="can"), obj(typ="anchor")])
+    renamed = SL.classes_for([obj(typ="beverage_can"), obj(typ="brick"), obj(typ="anchor")])
+    added = SL.classes_for([obj(typ="can"), obj(typ="brick"), obj(typ="anchor"),
+                            obj(typ="new_thing")])
+    assert list(before.values()) == ["anchor", "brick", "can"]
+    assert list(removed.values()) == ["anchor", "can"]
+    assert list(renamed.values()) == ["anchor", "beverage_can", "brick"]
+    assert list(added.values()) == ["anchor", "brick", "can", "new_thing"]
+    for c in (before, removed, renamed, added):
+        assert list(c) == list(range(len(c)))
+    # deterministic: the same world gives the same list (live = offline)
+    assert SL.classes_for([obj(typ="can"), obj(typ="brick")]) == \
+        SL.classes_for([obj(typ="brick"), obj(typ="can")])
+
+
+def test_the_label_source_defines_its_classes_from_its_world():
+    world = SL.WorldInfo(objects={1: SL.WorldObject(1, "can", 0, 0, 0, 0.1, 0.1, 0.1),
+                                  2: SL.WorldObject(2, "anchor", 1, 0, 0, 0.1, 0.1, 0.1)},
+                         path="x", sha256="0")
+    src = SL.SimGroundTruthLabelSource(world, SL.GroundTruthBuffer())
+    assert src.classes == {0: "anchor", 1: "can"}
+    assert src.info()["class_source"] == "world_types"
 
 
 def test_load_world_reads_objects_and_terrain(tmp_path):

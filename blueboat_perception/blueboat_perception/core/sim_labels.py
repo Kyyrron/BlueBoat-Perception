@@ -200,7 +200,9 @@ def load_world(world_dir: str) -> WorldInfo:
 
 
 def load_class_map(name_or_path: str = DEFAULT_CLASS_MAP) -> List[str]:
-    """The frozen YOLO class list (``core/data/<name>.json``, or a path)."""
+    """LEGACY: the class list frozen on 2026-10-16 (``core/data/<name>.json``, or a
+    path). Nothing in the detection or dataset path reads it any more; datasets
+    define their own classes (:func:`classes_for`)."""
     p = Path(name_or_path)
     if not p.suffix:
         p = DATA_DIR / f"{name_or_path}.json"
@@ -208,12 +210,13 @@ def load_class_map(name_or_path: str = DEFAULT_CLASS_MAP) -> List[str]:
     return [str(c) for c in doc["classes"]]
 
 
-def classes_for(objects: Iterable[WorldObject], base: List[str]) -> Dict[int, str]:
-    """Class ids: the frozen list first (stable across worlds), then any type of
-    this world the list does not know, sorted."""
-    names = list(base)
-    names += sorted({o.type for o in objects} - set(names))
-    return {i: n for i, n in enumerate(names)}
+def classes_for(objects: Iterable[WorldObject]) -> Dict[int, str]:
+    """A dataset's classes: the object types of its world, sorted by name, ids from 0.
+
+    A pure function of the world file, so live labels and an offline re-labelling
+    agree. Ids are local to the dataset; only the name is stable across datasets
+    (``tools/make_tile_dataset.py`` joins datasets by name)."""
+    return {i: n for i, n in enumerate(sorted({o.type for o in objects}))}
 
 
 # ---------------------------------------------------------------- ground truth
@@ -426,14 +429,13 @@ class SimGroundTruthLabelSource:
 
     def __init__(self, world: WorldInfo, buffer: GroundTruthBuffer,
                  classes: Optional[Dict[int, str]] = None, *, min_rows: int = 3,
-                 split_gap_rows: int = 8, class_map: str = DEFAULT_CLASS_MAP,
+                 split_gap_rows: int = 8,
                  beam_deg: float = DEFAULT_BEAM_DEG,
                  range_margin_bins: int = DEFAULT_RANGE_MARGIN_BINS) -> None:
         self.world = world
         self.buffer = buffer
-        self.class_map = class_map
         self.classes = (dict(classes) if classes is not None else
-                        classes_for(world.objects.values(), load_class_map(class_map)))
+                        classes_for(world.objects.values()))
         self._class_id = {v: k for k, v in self.classes.items()}
         self.min_rows = max(int(min_rows), 1)
         self.split_gap_rows = max(int(split_gap_rows), 1)
@@ -456,7 +458,7 @@ class SimGroundTruthLabelSource:
                 "world_objects_sha256": self.world.sha256, "objects": len(self.world.objects),
                 "terrain": (None if t is None else
                             {"file": t.source, "objects_stamped_in": t.stamped}),
-                "class_map": self.class_map, "min_rows": self.min_rows,
+                "class_source": "world_types", "min_rows": self.min_rows,
                 "split_gap_rows": self.split_gap_rows,
                 "beam_deg": math.degrees(self.beam_rad),
                 "range_margin_bins": self.range_margin_bins,

@@ -44,6 +44,7 @@ dataset (``docs/REQUESTS.md`` R-3). The pixels are native **slant** bins, so
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -247,6 +248,14 @@ class DatasetWriter:
                 + f"nc: {len(names)}\nnames:\n"
                 + "".join(f"  {k}: {v}\n" for k, v in sorted(names.items())))
 
+    def _classes_entry(self) -> Dict[str, Any]:
+        """This dataset's own class list: ids local to it (from 0), the name is the
+        stable key across datasets."""
+        names = {int(k): str(v) for k, v in (self.labels.classes or {}).items()}
+        ordered = [names[k] for k in sorted(names)]
+        return {"source": "world_types", "nc": len(ordered), "names": ordered,
+                "sha256": hashlib.sha256("\n".join(ordered).encode("utf-8")).hexdigest()}
+
     def manifest(self) -> Dict[str, Any]:
         return {"schema": MANIFEST_SCHEMA, "name": self.name,
                 "perception_version": __version__, "mode": self.mode,
@@ -255,6 +264,7 @@ class DatasetWriter:
                 "stream_ids": list(self.stream_ids), "image_count": self.count,
                 "skipped_no_png": self.skipped_no_png,
                 "label_source": self.labels.name,
+                "classes": self._classes_entry(),
                 "label_source_info": (self.labels.info() if hasattr(self.labels, "info")
                                       else None),
                 "labels": (self.labels.stats() if hasattr(self.labels, "stats")

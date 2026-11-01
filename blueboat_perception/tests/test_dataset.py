@@ -168,12 +168,15 @@ def test_a_ground_truth_label_source_fills_labels_data_yaml_and_sidecars(tmp_pat
     lines = (w.dir / "labels" / f"{stem}.txt").read_text().splitlines()
     assert len(lines) == 1
     cid, *box = lines[0].split()
-    assert int(cid) == SL.load_class_map().index("concrete_block")
+    data = (w.dir / "data.yaml").read_text()
+    assert f"  {int(cid)}: concrete_block" in data
+    cls = json.loads((w.dir / "manifest.json").read_text())["classes"]
+    assert cls["source"] == "world_types" and cls["names"] == ["concrete_block"]
     assert all(0.0 < float(v) <= 1.0 for v in box)
     assert (w.dir / "labels" / f"{stem_empty}.txt").read_text() == ""
     data = (w.dir / "data.yaml").read_text()
-    assert "train: images" in data and "val: images" in data and "nc: 29" in data
-    assert "  0: tire_car" in data and "  28: shopping_trolley" in data
+    assert "train: images" in data and "val: images" in data and "nc: 1" in data
+    assert "  0: concrete_block" in data
     side = json.loads((w.dir / "images" / f"{stem}.json").read_text())
     (b,) = side["perception"]["labels"]["boxes"]
     assert b["type"] == "concrete_block" and b["object_id"] == 7

@@ -214,7 +214,7 @@ between a live record and the offline record of the same saved image.
 | `detection_id` | — | `"<stream_id>/<image_id>/<k>"`, globally unique |
 | `uid` | — | station uid (§3) |
 | `image_id`, `stream_id` | — | |
-| `class_name`, `class_id` | — | dummy: `dummy_center`, 0; YOLO: the model's class names (the 29 `yolo_classes_v1` classes) and ids |
+| `class_name`, `class_id` | — | dummy: `dummy_center`, 0; YOLO: the model's own class names and ids (those of its training tile dataset) |
 | `confidence` | [0, 1] | calibrated probability if `calibrated`, else = `confidence_raw` |
 | `confidence_raw` | — | detector score; **not a probability** for YOLO-type detectors [R10 §2] |
 | `calibrated` | bool | false until a calibrator is fitted (P1 §8.2 ⚠) |
@@ -321,9 +321,12 @@ Schemas: BlueBoat-SSS-Sim `docs/topics.md` §5 and its sensor row.
   picture's W × H); an empty file = no object.
 - One box per object, side and contiguous run of rows: the object's highlight and its
   acoustic shadow (DESIGN §7).
-- Classes: `data.yaml`, from `core/data/yolo_classes_v1.json`, the 29 World Builder
-  classes in `CATALOG` order, append-only. A world's type not in it is appended after
-  them.
+- Classes: `data.yaml` `names`, defined **per dataset from 0**: the object types of the
+  dataset's world, sorted by name (`sim_labels.classes_for`). A simulator update that
+  removes, renames or adds a class needs no change here. Ids are local to the dataset;
+  only the name is stable. The manifest records `classes` {source `world_types`, nc, names,
+  sha256} (additive, 2026-10-24). `core/data/yolo_classes_v1.json` is a legacy reference
+  (the 29 classes of 2026-10-16); nothing reads it.
 
 **Sidecar `images/<stem>.json` → `perception.labels`.**
 - Per image: `{source: "sim_ground_truth/1", boxes: [...], ground_truth_coverage,

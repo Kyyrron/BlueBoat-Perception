@@ -412,8 +412,8 @@ cwd. Normally `~/ros2_ws/data/` (file-interfaces skill). Names are claimed exclu
 <name>/
   manifest.json          blueboat_perception/dataset_manifest/1: versions, mode, world_dir, stream ids,
                          image count, label source, created (UTC), the run's config
-  data.yaml              Ultralytics: train/val placeholders (the whole set) + names (29 World Builder
-                         classes, yolo_classes_v1); names: {} without a label source
+  data.yaml              Ultralytics: train/val placeholders (the whole set) + names (the object types of
+                         the world, sorted, ids from 0); names: {} without a label source
   images/<stem>.png      the DETECTOR INPUT (the configured preprocessor's `gray`; stem = <stream_id>_<image_id:05d>)
   display/<stem>.png     the GCS display PNG, preserved verbatim
   images/<stem>.json     sidecar: Aug-Studio AcquisitionMeta fields (layout "dual", altitude_m, slant_range_m,
@@ -446,8 +446,14 @@ cwd. Normally `~/ros2_ws/data/` (file-interfaces skill). Names are claimed exclu
     kept with ≥ `label_min_rows` rows.
   - **Not labelled (counted in the manifest):** multipath ghosts, wall echoes, and
     pings where the object is not visible or outside the beam.
-  - **Classes:** frozen in `core/data/yolo_classes_v1.json`, the World Builder `CATALOG`
-    order (29), append-only, test-checked against the simulator's source.
+  - **Classes (owner, 2026-10-24):** defined per dataset from 0 = the sorted object types
+    of the world (`classes_for`), so a simulator update that removes, renames or adds a
+    class needs no Perception change. Ids are local to a dataset; datasets are joined by
+    name in `tools/make_tile_dataset.py`. The 2026-10-16 frozen `yolo_classes_v1` list
+    (append-only, checked against the simulator's source) is retired; the file stays as
+    a legacy reference. Consequence: a model's class list is the union of its training
+    datasets' names (`model.json` `dataset.classes`), and a class absent from every
+    training world cannot be learnt.
   - **Checked against the simulator's renderer** (`LIVE_CHECKS.md` check 6): noise-free
     renders of the recorded pings, with and without the objects. Over 178 pings of a
     live run, the label interval encloses the object's influence at the near edge in
@@ -509,9 +515,12 @@ cwd. Normally `~/ros2_ws/data/` (file-interfaces skill). Names are claimed exclu
   instance. Expected to be rare on a surface vessel (short shadows, owner).
 - **Background:** empty tiles are capped at 10 % of the **train** units (seeded;
   Ultralytics' "about 0–10 % background images" [S1]); val and test keep every unit.
-- **Class drift:** labels must be `yolo_classes_v1` ids; a dataset whose names differ, a
-  box with a world-only class (id ≥ 29, appended by `sim_labels.classes_for`) or a type
-  disagreeing with its id, and an unlabelled dataset (unless `--unlabelled`) are refused.
+- **Classes:** datasets are joined **by name**: the tile dataset's list is the sorted union
+  of the names of all input datasets (every split, one id space; `--classes FILE` fixes
+  it) and each label is remapped through its dataset's own `data.yaml`. A box whose type
+  disagrees with its dataset's name for that id, and an unlabelled dataset (unless
+  `--unlabelled`), are refused; a class with no train example is reported. The evaluation
+  compares predicted `class_name` with the ground truth's `type`, never ids.
 - **Output:** `<root>/data/Tile_data/<name>/` — `data.yaml` (3-channel), `data_gray1.yaml`
   (`channels: 1`), `images|labels/{train,val,test}`, `manifest.json` (configuration, split,
   seed, sources with manifest SHA-256, code version, counts, every drop). `--mode full`
@@ -590,7 +599,7 @@ a module-level `importorskip`). Tests:
 - (2026-10-23) tiling (starts, coverage, padding, skips), merging (split boxes, order),
   the YOLO adapter with a fake runtime and, when installed, real Ultralytics (offline =
   live byte equality), the 999 cap, the map filter, the tile dataset writer (rule B + (i),
-  visibility, background share, class drift), the evaluation (AP, matching, ignore).
+  visibility, background share, class union by name), the evaluation (AP, matching, ignore).
 
 Corpus tests skip cleanly without `$BLUEBOAT_DATA_DIR` data.
 

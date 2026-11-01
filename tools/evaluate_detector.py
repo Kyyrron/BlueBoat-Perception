@@ -59,7 +59,6 @@ from label_visibility import box_contrast, classify  # noqa: E402
 from blueboat_perception.core.dataroot import claim_dir, data_root, safe_name  # noqa: E402
 from blueboat_perception.core.detectors.yolo import PARAM_DEFAULTS, detector_args  # noqa: E402
 from blueboat_perception.core.pipeline import Pipeline, PipelineConfig  # noqa: E402
-from blueboat_perception.core.sim_labels import load_class_map  # noqa: E402
 
 RESULTS_SCHEMA = "blueboat_perception/evaluation/1"
 IOUS = np.round(np.arange(0.50, 0.951, 0.05), 2)
@@ -218,7 +217,6 @@ def main(argv=None) -> int:
     ap.add_argument("--limit", type=int, default=0, help="pictures per dataset (0 = all)")
     a = ap.parse_args(argv)
 
-    classes = load_class_map()
     split = load_split(a.split)
     sources = []
     for ds in a.datasets:
@@ -228,22 +226,22 @@ def main(argv=None) -> int:
         s, key = split_of(ds, man, split)
         if s != a.on:
             continue
-        check_classes(ds, man, classes, unlabelled=False)
+        names = check_classes(ds, man, unlabelled=False)
         import hashlib
-        sources.append((ds, man, key, hashlib.sha256(mtext.encode()).hexdigest()))
+        sources.append((ds, man, key, hashlib.sha256(mtext.encode()).hexdigest(), names))
     if not sources:
         print(f"no dataset in split {a.on!r}", file=sys.stderr)
         return 2
     det_args = detector_args(a.detector, vars(a))
     pipeline = Pipeline(PipelineConfig(detector=a.detector, detector_args=det_args))
     pictures, per_pic = [], []
-    for ds, man, key, _sha in sources:
+    for ds, man, key, _sha, names in sources:
         stems = sorted(p.stem for p in (ds / "images").glob("*.json"))
         for stem in stems[:a.limit or None]:
             img, _gray, _valid, sidecar = picture(ds, stem, man)
             boxes = ((sidecar.get("perception") or {}).get("labels") or {}).get("boxes") or []
             for b in boxes:
-                check_box_class(ds, stem, b, classes)
+                check_box_class(ds, stem, b, names)
             t0 = time.perf_counter()
             rec, dets = pipeline.run(img)
             ms = 1000.0 * (time.perf_counter() - t0)
@@ -253,9 +251,9 @@ def main(argv=None) -> int:
                 v = classify(box_contrast(img.db, boxes, b), float(b.get("shadow_m") or 0.0),
                              a.visibility_db, DEFAULT_MIN_SHADOW_M)
                 gts.append({"box": px_box(p["r0"], p["c0"], p["r1"], p["c1"]),
-                            "class_id": int(b["class_id"]), "ignore": v == "faint",
+                            "class_name": str(b["type"]), "ignore": v == "faint",
                             "slant_m": float(b.get("slant_m") or 0.0)})
-            d = [{"box": px_box(*x["bbox_px"]), "class_id": int(x["class_id"]),
+            d = [{"box": px_box(*x["bbox_px"]), "class_name": str(x["class_name"]),
                   "score": float(x["confidence_raw"])} for x in (dets or [])]
             pictures.append({"dets": d, "gts": gts, "latency_ms": ms})
             per_pic.append({"dataset": ds.name, "world": key, "stem": stem, "key": rec["key"],
@@ -263,6 +261,13 @@ def main(argv=None) -> int:
                             "detector_tiles": rec["summary"].get("detector_tiles"),
                             "status": rec["processing"]["detector"]["status"]})
     bands = [float(x) for x in a.range_bands.split(",")]
+    # classes are compared by NAME (dataset ids are local; the model has its own ids)
+    classes = sorted({g["class_name"] for p in pictures for g in p["gts"]}
+                     | {x["class_name"] for p in pictures for x in p["dets"]})
+    cid = {n: i for i, n in enumerate(classes)}
+    for p in pictures:
+        for x in p["gts"] + p["dets"]:
+            x["class_id"] = cid[x["class_name"]]
     metrics = evaluate(pictures, classes, bands, a.operating_threshold)
     out = claim_dir(data_root(a.data_dir) / "data" / "Perception_eval", safe_name(a.name))
     vers = {"python": platform.python_version()}
@@ -279,7 +284,7 @@ def main(argv=None) -> int:
                "detector_params": getattr(pipeline.detector, "params", None),
                "pipeline": pipeline.config.to_json(),
                "datasets": [{"dir": str(ds), "world": key, "manifest_sha256": sha}
-                            for ds, _m, key, sha in sources],
+                            for ds, _m, key, sha, _n in sources],
                "split_file": str(a.split), "visibility_db": a.visibility_db,
                "versions": vers, "code": code_version(), "metrics": metrics,
                "config": {k: str(v) if isinstance(v, Path) else

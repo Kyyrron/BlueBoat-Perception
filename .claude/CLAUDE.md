@@ -36,7 +36,8 @@ and the code disagree, the code wins: read the file before trusting a descriptio
       `dataroot.py`, `recordlog.py`, `stats.py`;
     - `sim_labels.py` — dataset labels from the simulator's ground truth (§4);
     - `data/fixed_gray_v1.json` — the fixed mapping's parameters;
-      `data/yolo_classes_v1.json` — the frozen YOLO classes.
+      `data/yolo_classes_v1.json` — LEGACY (the 29 classes of 2026-10-16; nothing reads
+      it: a dataset defines its classes from its world).
   - `ros/perception_node.py` + `ros/convert.py` — the thin node, and the only place
     rclpy and message types are imported. `ros/ground_truth.py` — the dataset mode's
     two ground-truth subscriptions, and the only online file naming them.
@@ -48,7 +49,7 @@ and the code disagree, the code wins: read the file before trusting a descriptio
   - `draw_labels.py` — draws a dataset's boxes and checks their intensities;
   - `label_visibility.py` — the 2 dB visibility rule (shared);
   - `make_tile_dataset.py` — Perception datasets → Ultralytics tile dataset, split by
-    world (rule B + (i), class-drift checks);
+    world (rule B + (i), classes joined by name);
   - `train_yolo.py` — YOLO11s / YOLO26s training, explicit augmentation, `model.json`;
   - `evaluate_detector.py` — AP / recall per range band / false detections / latency on
     held-out worlds, through the real pipeline.
@@ -167,7 +168,8 @@ and the code disagree, the code wins: read the file before trusting a descriptio
   - one YOLO box per object = its highlight + its acoustic shadow;
   - built per picture row from the ping's exact rendering pose and the renderer's
     contacts, with the renderer's own beam geometry;
-  - classes = the 29 World Builder classes, frozen and append-only;
+  - classes = the object types of the dataset's world, sorted, ids from 0 (owner,
+    2026-10-24): a simulator update changing the catalog needs no change here;
   - multipath ghosts, wall echoes and hidden pings are skipped and counted;
   - checked against noise-free renders of the recorded pings (`LIVE_CHECKS.md`
     check 6).
@@ -185,7 +187,7 @@ and the code disagree, the code wins: read the file before trusting a descriptio
 - **Tile datasets:** rule B + (i) at tile edges (keep a clipped label if ≥ 50 % of its
   highlight is in the tile and it is ≥ 4 px wide; else drop the label, keep the tile);
   faint boxes (< 2 dB contrast) dropped and their tiles left out; ≤ 10 % empty tiles in
-  train; classes = `yolo_classes_v1` or refused.
+  train; classes = the sorted union of the datasets' names (ids are local to a dataset).
 - **Merge rule and visibility threshold are not yet decided on evidence** (no simulated
   dataset existed on 2026-10-23); see TODO.
 

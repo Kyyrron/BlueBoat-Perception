@@ -59,8 +59,8 @@ the module's `.claude/CLAUDE.md`; the detector-input decisions in
   - [x] Phase 2: `core/tiling.py`, `core/merge.py` + tests;
   - [x] Phase 3: `detectors/yolo.py` (Ultralytics, lazy), pipeline / node / CLI / config,
         records + status (additive), offline = live tested on CPU with real Ultralytics;
-  - [x] Phase 4: `tools/make_tile_dataset.py` + class-drift checks (all three creation
-        paths use `yolo_classes_v1`; the simulator `dev` CATALOG = v1, 29, same order);
+  - [x] Phase 4: `tools/make_tile_dataset.py` (2026-10-24: classes per dataset from the
+        world, joined by name; no frozen list, no simulator coupling);
   - [x] Phase 5: `tools/train_yolo.py`, `tools/evaluate_detector.py`, docs; a synthetic
         smoke run (plumbing only);
   - [ ] **Phase 6 — run the comparison (owner):** build the simulated worlds in dataset
@@ -93,9 +93,8 @@ the module's `.claude/CLAUDE.md`; the detector-input decisions in
       Ultralytics' tips say partial labelling "will not work". Measure how often it
       happens on the first tile datasets (`counts.*.dropped_partial` in the manifest).
 - [ ] Live check 7 (the tiled path in a world mission, `LIVE_CHECKS.md`): needs weights.
-- [ ] The simulator's GitHub default branch `main` (0225a7f) has **13** World Builder
-      classes; `dev` (pinned by the superproject) has the 29 of `yolo_classes_v1`. A
-      checkout of `main` beside this module fails the class-map test.
+- [x] (2026-10-24) The simulator's catalog no longer matters to Perception: classes
+      come from each world's objects, so `main` (13 classes) and `dev` (29) both work.
 - [ ] **The first image of every stream arrives ~3.06 s late** (one part; all three runs).
       Consistent with a DDS heartbeat repair of the first large RELIABLE sample (Fast DDS
       default period 3 s); not verified, nothing lost. Check on the real boat; a warm-up
