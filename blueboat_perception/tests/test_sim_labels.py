@@ -5,9 +5,6 @@ from __future__ import annotations
 
 import json
 import math
-import subprocess
-import sys
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -23,7 +20,6 @@ N = W // 2
 BIN = PITCH * (N - 1) / N              # the device's own bin, L/N
 SZ, ZSEA = -0.2, -4.0                  # transducer and seabed heights
 STEP = 0.02                            # along-track metres per ping
-SIM_REPO = Path(__file__).resolve().parents[3] / "BlueBoat-SSS-Sim" / "blueboat_sss_sim"
 
 
 def obj(oid=7, typ="concrete_block", x=0.3, y=5.0, yaw=0.0, L=0.4, Wd=0.2, h=0.3):

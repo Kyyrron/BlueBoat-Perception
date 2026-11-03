@@ -76,6 +76,7 @@ DEFAULT_CLASS_MAP = "yolo_classes_v1"
 #: rounded to 3 and 4 decimals; a ping period is >= 50 ms.
 TICK_MATCH_S = 0.02
 SIDES = (("port", +1), ("starboard", -1))
+SIGN = dict(SIDES)
 #: Omniscan 450 SS horizontal aperture (the simulator's
 #: ``horizontal_aperture_deg``, 0.5 in config/default_sonar.yaml).
 DEFAULT_BEAM_DEG = 0.5
@@ -567,10 +568,7 @@ class SimGroundTruthLabelSource:
                     o = self._usable(c, skipped)
                     if o is None:
                         continue
-                    g = ping_object_bins(ping.pose, sign, o, c, self._seabed.get(o.object_id),
-                                         bin_m=bin_m, range_max_m=range_max, n_bins=half,
-                                         beam_rad=self.beam_rad,
-                                         margin_bins=self.range_margin_bins)
+                    g = self._bins(ping, sign, o, c, bin_m, range_max, half)
                     if g is None:
                         skipped["outside_beam"] += 1
                         continue
@@ -654,13 +652,15 @@ class SimGroundTruthLabelSource:
         nxt = self.buffer.lookup(side, n + step, float(img.rows.t[row]))
         if nxt is None:
             return False
-        sign = +1 if side == "port" else -1
         o = self.world.objects[oid]
         for c in nxt.contacts:
             if c.get("object_id") == oid and not c.get("ghost") and not c.get("via") \
                     and c.get("visible", True):
-                return ping_object_bins(nxt.pose, sign, o, c, self._seabed.get(oid),
-                                        bin_m=bin_m, range_max_m=range_max, n_bins=half,
-                                        beam_rad=self.beam_rad,
-                                        margin_bins=self.range_margin_bins) is not None
+                return self._bins(nxt, SIGN[side], o, c, bin_m, range_max, half) is not None
         return False
+
+    def _bins(self, ping: PingTruth, sign: int, o: WorldObject, contact: dict,
+              bin_m: float, range_max: float, half: int) -> Optional[dict]:
+        return ping_object_bins(ping.pose, sign, o, contact, self._seabed.get(o.object_id),
+                                bin_m=bin_m, range_max_m=range_max, n_bins=half,
+                                beam_rad=self.beam_rad, margin_bins=self.range_margin_bins)

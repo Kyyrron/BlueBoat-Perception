@@ -274,9 +274,10 @@ and rotated to the world frame:
   `source` removed. A test asserts byte equality of the rest.
 
 ### 4.8 Pipeline — `core/pipeline.py`
-`Pipeline(preprocessor, detector, calibrator, uncertainty, record_builder).run(img) ->
-(ImageRecord, list[Detection])`. It is pure: same input and config give the same output.
-There is no randomness, wall time or global state.
+`Pipeline(PipelineConfig, *, preprocessor=, detector=, calibrator=).run(img) ->
+(record, detections | None)`; `run_full(img)` also returns the `DetectorInput` (the
+dataset writer's training image). It is pure: same input and config give the same
+output. There is no randomness, wall time or global state.
 
 ### 4.9 Offline reader — `core/session.py`
 Iterates a GCS session (`<session>/seabed_images/`), a merged session, or a "Save

@@ -78,7 +78,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -303,15 +303,15 @@ def plan_units(sources, a, counts) -> List[dict]:
             c["pictures"] += 1
             H, W = gray.shape
             if a.mode == "full":
-                parts = [(None, 0, W, H)]
+                parts = [(0, W, H)]
             else:
                 parts = []
                 for t in cut_tiles(gray, valid, cfg):
                     if t.skipped:
                         c["tiles_skipped"] += 1
                         continue
-                    parts.append((t, t.c0, t.cols, t.rows))
-            for t, c0, cols, rows in parts:
+                    parts.append((t.c0, t.cols, t.rows))
+            for c0, cols, rows in parts:
                 if a.mode == "full":
                     lines, n, exclude = full_labels(boxes, vis, H, W)
                 else:

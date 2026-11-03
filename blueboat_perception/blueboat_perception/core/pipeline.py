@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 import numpy as np
 
@@ -34,6 +34,29 @@ UID_OVERFLOW_BASE = 1_000_000_000
 #: the next image's uids. The detector's order decides which are kept (the
 #: YOLO adapter: descending score); the cut is counted in the record.
 MAX_DETECTIONS = 999
+
+
+class _Turn(NamedTuple):
+    """Per-row turn evidence of one image (decision 6.2)."""
+
+    yaw_rate: np.ndarray
+    imu: bool                   # yaw_rate from the IMU, else derived from yaw
+    smoothed: np.ndarray
+    rstar: np.ndarray
+    inner: np.ndarray
+    backscan: np.ndarray
+
+
+class _ImageGeometry(NamedTuple):
+    """Per-image arrays every detection of the image reads, computed once."""
+
+    grids: Tuple[np.ndarray, np.ndarray]
+    port_cols: np.ndarray
+    slant_cols: np.ndarray
+    altitude: np.ndarray
+    look_port: np.ndarray
+    look_stbd: np.ndarray
+    row_pitch: float
 
 
 def on_map(detections, min_confidence: float) -> list:
@@ -134,13 +157,10 @@ class Pipeline:
     def run_full(self, img: SeabedImageInput):
         """(record, detections, DetectorInput or None) -- the detector input
         too, for the dataset writer (training images = the detector input)."""
-        record = self._base_record(img)
+        turn = self._turn(img)
+        record = self._base_record(img, turn)
         if img.db is None:
             record["processing"]["detector"]["status"] = "no_pixels"
-            record["sides"] = None
-            record["footprint"] = None
-            record["summary"]["one_sided_rows"] = None
-            record["detections"] = None
             return record, None, None
         inp = self.preprocessor.run(img)
         record["summary"]["detector_input"] = {
@@ -157,49 +177,47 @@ class Pipeline:
                 # No detector input (identity without its PNG): not searched,
                 # so unknown -- never "searched, nothing found".
                 record["processing"]["detector"]["status"] = "no_detector_input"
-                spans = geo.side_spans(img)
-                record["sides"], record["footprint"] = self._coverage(img, spans)
-                pp, ps = spans["port"]["present"], spans["starboard"]["present"]
-                record["summary"]["one_sided_rows"] = int(np.count_nonzero(pp ^ ps))
-                record["detections"] = None
+                self._add_coverage(record, img)
                 return record, None, inp
         capped = max(len(raw) - self.config.max_detections, 0)
         if capped:
             raw = raw[:self.config.max_detections]
         if capped or stats is not None:
             record["processing"]["detector"]["capped"] = capped
-        grids = geo.world_grids(img)
-        turn = self._turn(img)
-        dets = [self._detection(img, grids, d, k, turn) for k, d in enumerate(raw)]
-        spans = geo.side_spans(img)
-        record["sides"], record["footprint"] = self._coverage(img, spans)
-        pp, ps = spans["port"]["present"], spans["starboard"]["present"]
-        record["summary"]["one_sided_rows"] = int(np.count_nonzero(pp ^ ps))
+        geom = self._image_geometry(img)
+        dets = [self._detection(img, geom, d, k, turn) for k, d in enumerate(raw)]
+        self._add_coverage(record, img)
         record["detections"] = dets
         return record, dets, inp
 
     # ---- record parts ------------------------------------------------------------
-    def _turn(self, img: SeabedImageInput, yaw_rate=None):
-        """(smoothed yaw rate, r*, inner side, backscan start) per row."""
+    def _turn(self, img: SeabedImageInput) -> _Turn:
+        """Decision 6.2: turn evidence per row -- flags only, every row kept.
+        The yaw rate is the IMU's when any row has one, else derived from yaw."""
         r = img.rows
-        if yaw_rate is None:
-            imu = r.yaw_rate is not None and bool(np.isfinite(r.yaw_rate).any())
-            yaw_rate = r.yaw_rate if imu else geo.derived_yaw_rate(r.t, r.yaw)
+        imu = r.yaw_rate is not None and bool(np.isfinite(r.yaw_rate).any())
+        yaw_rate = r.yaw_rate if imu else geo.derived_yaw_rate(r.t, r.yaw)
         rate_s = geo.smooth_in_time(r.t, yaw_rate, self.config.turn_window_s)
         rstar, inner, back = geo.turn_geometry(r.speed, rate_s, r.range)
-        return rate_s, rstar, inner, back
+        return _Turn(yaw_rate, imu, rate_s, rstar, inner, back)
 
-    def _base_record(self, img: SeabedImageInput) -> Dict[str, Any]:
+    def _add_coverage(self, record: Dict[str, Any], img: SeabedImageInput) -> None:
+        """``sides``, ``footprint`` and ``summary.one_sided_rows`` (needs pixels)."""
+        spans = geo.side_spans(img)
+        record["sides"], record["footprint"] = self._coverage(img, spans)
+        pp, ps = spans["port"]["present"], spans["starboard"]["present"]
+        record["summary"]["one_sided_rows"] = int(np.count_nonzero(pp ^ ps))
+
+    def _base_record(self, img: SeabedImageInput, turn: _Turn) -> Dict[str, Any]:
+        """The record without detector output: ``sides``, ``footprint``,
+        ``one_sided_rows`` and ``detections`` are None (= no pixels)."""
         r = img.rows
         h = geo.row_altitude(img)
         look_p, look_s = geo.look_azimuths(r.yaw)
-        imu = r.yaw_rate is not None and bool(np.isfinite(r.yaw_rate).any())
-        yaw_rate = r.yaw_rate if imu else geo.derived_yaw_rate(r.t, r.yaw)
+        yaw_rate, imu, rate_s, rstar, inner, back = turn
         finite_t = r.t[np.isfinite(r.t)]
         rate_f = np.abs(yaw_rate[np.isfinite(yaw_rate)])
         cfg = self.config
-        # Decision 6.2: turn evidence per row -- flags only, every row kept.
-        rate_s, rstar, inner, back = self._turn(img, yaw_rate)
         n_rows = max(r.n, 1)
         return {
             "schema": RECORD_SCHEMA,
@@ -311,7 +329,8 @@ class Pipeline:
                      if outline else None)
         return sides, footprint
 
-    def _row_pitch(self, img: SeabedImageInput) -> float:
+    @staticmethod
+    def _row_pitch(img: SeabedImageInput) -> float:
         a = img.rows.along
         if a.size >= 2:
             d = np.abs(np.diff(a))
@@ -320,24 +339,29 @@ class Pipeline:
                 return float(np.median(d))
         return float(img.bin_pitch_m)
 
-    def _detection(self, img: SeabedImageInput, grids, d: RawDetection,
-                   k: int, turn) -> Dict[str, Any]:
+    def _image_geometry(self, img: SeabedImageInput) -> _ImageGeometry:
+        port_cols, slant_cols = geo.column_slant(img.shape[1], img.bin_pitch_m)
+        look_p, look_s = geo.look_azimuths(img.rows.yaw)
+        return _ImageGeometry(geo.world_grids(img), port_cols, slant_cols,
+                              geo.row_altitude(img), look_p, look_s, self._row_pitch(img))
+
+    def _detection(self, img: SeabedImageInput, g: _ImageGeometry, d: RawDetection,
+                   k: int, turn: _Turn) -> Dict[str, Any]:
         H, W = img.shape
         row = int(min(max(d.center_px[0], 0), H - 1))
         col = int(min(max(d.center_px[1], 0), W - 1))
         r = img.rows
-        port_cols, slant_cols = geo.column_slant(W, img.bin_pitch_m)
-        is_port = bool(port_cols[col])
-        s = float(slant_cols[col])
-        h = float(geo.row_altitude(img)[row])
+        is_port = bool(g.port_cols[col])
+        s = float(g.slant_cols[col])
+        h = float(g.altitude[row])
         yaw = float(r.yaw[row])
-        look_p, look_s = geo.look_azimuths(np.array([yaw]))
-        look = float(look_p[0] if is_port else look_s[0])
-        wx, wy = float(grids[0][row, col]), float(grids[1][row, col])
+        look = float(g.look_port[row] if is_port else g.look_stbd[row])
+        wx, wy = float(g.grids[0][row, col]), float(g.grids[1][row, col])
+        ground = geo.ground_range(img, s, h, is_port)
         conf_raw = float(d.score_raw)
         conf = float(self.calibrator.calibrate(conf_raw, d.logit, d.class_id))
         r0, c0, r1, c1 = (int(v) for v in d.bbox_px)
-        row_pitch = self._row_pitch(img)
+        row_pitch = g.row_pitch
         # A degenerate box (one pixel) is a point detection: no extent term
         # in the covariance, drawn at point_extent_m. Otherwise the inclusive
         # box spans (c1 - c0 + 1) bins across and (r1 - r0 + 1) rows along
@@ -365,19 +389,24 @@ class Pipeline:
             "t_row_s": float(r.t[row]),
             "side": "port" if is_port else "starboard",
             "slant_range_m": s,
-            "ground_range_m": geo.ground_range(img, s, h, is_port),
+            "ground_range_m": ground,
             "look_azimuth_rad": look,
             "grazing_angle_rad": geo.grazing_angle(s, h),
             "boat_heading_rad": yaw, "boat_speed_mps": float(r.speed[row]),
             "boat_altitude_m": h,
-            "boat_roll_rad": (None if r.roll is None else
-                              (float(r.roll[row]) if np.isfinite(r.roll[row]) else None)),
-            "boat_pitch_rad": (None if r.pitch is None else
-                               (float(r.pitch[row]) if np.isfinite(r.pitch[row]) else None)),
+            "boat_roll_rad": _finite_at(r.roll, row),
+            "boat_pitch_rad": _finite_at(r.pitch, row),
             # Decision 6.2: a flag, never a rejection. True when the detection
             # lies on the inner side of a turn beyond r* (scanned backwards).
-            "turn_radius_m": (float(turn[1][row]) if np.isfinite(turn[1][row]) else None),
-            "turn_backscan": bool(np.isfinite(turn[3][row])
-                                  and turn[2][row] == (1 if is_port else -1)
-                                  and geo.ground_range(img, s, h, is_port) > turn[1][row]),
+            "turn_radius_m": _finite_at(turn.rstar, row),
+            "turn_backscan": bool(np.isfinite(turn.backscan[row])
+                                  and turn.inner[row] == (1 if is_port else -1)
+                                  and ground > turn.rstar[row]),
         }
+
+
+def _finite_at(a: Optional[np.ndarray], i: int) -> Optional[float]:
+    """``float(a[i])``, or None when ``a`` is absent or ``a[i]`` is not finite."""
+    if a is None or not np.isfinite(a[i]):
+        return None
+    return float(a[i])

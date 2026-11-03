@@ -80,24 +80,6 @@ def is_real(name: str) -> bool:
 
 
 # ---------------------------------------------------------------- 1. turns
-def smooth_in_time(t, w, window_s=1.0):
-    """Mean of ``w`` over rows within +/- window_s/2 of each row (sustained rate)."""
-    t = np.asarray(t, float)
-    w = np.asarray(w, float)
-    order = np.argsort(t, kind="stable")
-    ts, wsrt = t[order], w[order]
-    fin = np.isfinite(wsrt)
-    cs = np.concatenate([[0.0], np.cumsum(np.where(fin, wsrt, 0.0))])
-    cn = np.concatenate([[0], np.cumsum(fin)])
-    lo = np.searchsorted(ts, ts - window_s / 2, "left")
-    hi = np.searchsorted(ts, ts + window_s / 2, "right")
-    n = cn[hi] - cn[lo]
-    mean = np.where(n > 0, (cs[hi] - cs[lo]) / np.maximum(n, 1), np.nan)
-    out = np.empty_like(mean)
-    out[order] = mean
-    return out
-
-
 def turns(sets: Dict[str, Path]) -> dict:
     out = {}
     for name, d in sets.items():
@@ -121,7 +103,7 @@ def turns(sets: Dict[str, Path]) -> dict:
             rstar = np.where(np.abs(w) > 1e-6, v / np.maximum(np.abs(w), 1e-6), np.inf)
             full = ok & (rstar < r.range)
             half = ok & (rstar < r.range / 2)
-            ws = smooth_in_time(r.t, w, 1.0)
+            ws = geo.smooth_in_time(r.t, w, 1.0)
             rs = np.where(np.abs(ws) > 1e-6, v / np.maximum(np.abs(ws), 1e-6), np.inf)
             sfull = ok & np.isfinite(ws) & (rs < r.range)
             shalf = ok & np.isfinite(ws) & (rs < r.range / 2)
@@ -174,7 +156,7 @@ def ping_turns(logs: List[Path]) -> dict:
                 j += 1
             if t[j] - t[i] > 0.5:
                 v[i] = float(np.hypot(*(xy[j] - xy[i]))) / (t[j] - t[i])
-        ws = smooth_in_time(t, w, 1.0)
+        ws = geo.smooth_in_time(t, w, 1.0)
         res = {"pings": int(t.size), "abs_yaw_rate_deg_s": summary(np.degrees(np.abs(w))),
                "abs_yaw_rate_1s_deg_s": summary(np.degrees(np.abs(ws))),
                "speed_mps": summary(v)}

@@ -38,6 +38,7 @@ Every result is a result **on simulated data**, model-conditional (CM-13).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import platform
 import sys
@@ -227,7 +228,6 @@ def main(argv=None) -> int:
         if s != a.on:
             continue
         names = check_classes(ds, man, unlabelled=False)
-        import hashlib
         sources.append((ds, man, key, hashlib.sha256(mtext.encode()).hexdigest(), names))
     if not sources:
         print(f"no dataset in split {a.on!r}", file=sys.stderr)

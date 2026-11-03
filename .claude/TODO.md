@@ -4,69 +4,16 @@ Open items only, and the phase task list. Settled design lives in `docs/DESIGN.m
 the module's `.claude/CLAUDE.md`; the detector-input decisions in
 `docs/PREPROCESSING_STUDY.md` §6.
 
-## Phase status
-- [x] **Phase 0** — understand, references, questions (answers Q1–Q8, 2026-10-15).
-- [x] **Phase 1** — design documents (2026-10-15), approved 2026-10-16 with answers 1–7.
-- [x] **Phase 2** — build (2026-10-16):
-  - [x] SSS gate baseline re-measured before any edit: **298 / 4 fail / 50**. The four were
-        stale expectations after SSS `994a74b`, repaired as a labelled baseline repair
-        → 302 / 0 / 50.
-  - [x] SSS golden captured from the unmodified code (`tests/fixtures/perception_golden.json`,
-        146 images, deterministic, reproduced byte for byte).
-  - [x] Perception core + tests (59 pass / 4 skip); ROS node; launch (`mode:=dataset` claims
-        the folder and starts the archival ground-truth bag); offline CLI; dataset writer.
-        `colcon build --packages-select blueboat_perception` OK; both launch modes start and
-        stop cleanly.
-  - [x] SSS: one detection source (the in-process dummy removed), image publishing,
-        `stream_id`, schema 5, georef convention 2 (pictures, clicks, overlay), Q8 attitude
-        + ping numbers (live and replay), the per-detection stamp, Run AI through this core,
-        and the separate profile-miss fallback fix. Gate **351 / 0 / 50**.
-  - [x] MCS: `PerceptionConfig`, `perception_command`, the Session row; `smoke_test.py`
-        PASSED (+ `perception ok`), `ruff check .` clean.
-  - [x] Docs: REQUESTS (R-1 and R-2 withdrawn), DESIGN, topics, SSS and MCS docs.
-- [x] **Phase 3** — live checks (2026-10-16), `docs/LIVE_CHECKS.md`:
-  1. a sim world mission launched through MCS's `LaunchManager`, with the GCS running:
-     - Normal: 47 images → 47 records → 47 detections back on the GCS map, 0 gaps;
-     - Dataset: 27 / 27 / 27; the dataset PNGs are byte-identical to the session's, the
-       Aug Studio loads it, and the ground-truth bag holds 5297 messages;
-  2. offline = live: 47 / 47 and 27 / 27 records identical;
-  3. latency: Perception 25.5 ms p50; image → detection back in the GCS 51 ms p50 / 62 ms
-     p95; image 0 of each stream ~3.06 s (below);
-  4. the real-boat commands, for you.
-  - Found and fixed: a late PNG was counted as a duplicate (now `late_parts`).
-- [x] **Phase 4** — measurements M1–M6 + recommendation (`PREPROCESSING_STUDY.md` §5–§6,
-      `tools/preprocessing_study.py`, `docs/data/phase4_2026-10-16.json`).
-- [x] **Decisions §6.1–§6.7** (yours, 2026-10-16), implemented the same day
-      (STUDY v2 §6; `LIVE_CHECKS.md` check 5):
-  - 6.1 originals preserved, detector input separate (`DetectorInput.gray`; dataset
-    `images/` + `display/`);
-  - 6.2 turn flags per row and detection, nothing excluded;
-  - 6.3 GCS speed window 5 s → 2 s (SSS, `along_track.window_s`);
-  - 6.4 `fixed_gray` (`fixed_gray_v1`) is the default detector input, `identity` the
-    baseline;
-  - 6.5 `near_range_mask_m` 0.0 / 0.75, default 0.0;
-  - 6.6 roll correction behind a disabled boundary (raises), roll kept in the records;
-  - 6.7 geometric correction, despeckling, HE, Retinex deferred (raise).
-- [x] **Phase 5** — handover (2026-10-16): `.claude/CLAUDE.md`, this file, SSS `.claude`
-      updates, the root `CLAUDE.md` and the `module-gates` / `file-interfaces` skills (applied
-      by your order), the report.
+## Done (details in DESIGN, STUDY §6, LIVE_CHECKS)
+Phases 0–5 (2026-10-15/16: design, build, live checks 1–6, preprocessing study and
+decisions 6.1–6.7, handover); tiled YOLO task phases 0–5 (2026-10-23/24: tiling, merge,
+adapter, tile datasets with per-world classes, training and evaluation tools).
 
-- [x] **Tiled YOLO task (2026-10-23)** — brief "tile the long seabed images for YOLO":
-  - [x] Phase 0–1: verification, questions (answers: visibility 2 dB as recommended;
-        tile edges B + (i) after a literature check; pad short pictures; box centre kept;
-        `map_min_confidence` 0.10; cap 999; worlds by the owner; Ultralytics a
-        superproject dependency later);
-  - [x] Phase 2: `core/tiling.py`, `core/merge.py` + tests;
-  - [x] Phase 3: `detectors/yolo.py` (Ultralytics, lazy), pipeline / node / CLI / config,
-        records + status (additive), offline = live tested on CPU with real Ultralytics;
-  - [x] Phase 4: `tools/make_tile_dataset.py` (2026-10-24: classes per dataset from the
-        world, joined by name; no frozen list, no simulator coupling);
-  - [x] Phase 5: `tools/train_yolo.py`, `tools/evaluate_detector.py`, docs; a synthetic
-        smoke run (plumbing only);
-  - [ ] **Phase 6 — run the comparison (owner):** build the simulated worlds in dataset
-        mode, then the README recipe (tile datasets → YOLO11s / YOLO26s × arms (a) full
-        640, (b) 256/128, (c) 256/64; merge nms vs greedy_nmm on (b); 3- vs 1-channel →
-        evaluate on val, choose, then report once on test). Results "on simulated data".
+## Next
+- [ ] **Phase 6 — run the comparison (owner):** build the simulated worlds in dataset
+      mode, then the README recipe (tile datasets → YOLO11s / YOLO26s × arms (a) full
+      640, (b) 256/128, (c) 256/64; merge nms vs greedy_nmm on (b); 3- vs 1-channel →
+      evaluate on val, choose, then report once on test). Results "on simulated data".
 
 ## Open technical items
 - [ ] **Tune the visibility threshold (to do once out of cloud mode, owner 2026-10-23).**
@@ -81,10 +28,10 @@ the module's `.claude/CLAUDE.md`; the detector-input decisions in
       threshold weak boxes can widen a union.
 - [ ] **Calibration data:** once trained weights exist, the held-out simulated worlds
       (never the test worlds used for the comparison) are ready for a calibrator fit
-      (temperature / Platt, R11, DESIGN §4.5). Not started; `calibrated` stays false.
+      (temperature / Platt, R11, DESIGN §4.5), one held-out split per domain (sim, real),
+      judged by reliability diagrams + ECE. Not started; `calibrated` stays false.
 - [ ] **Not now (listed only):** upscaled tiles (2× to 512); ground-range resampling (R26:
-      consistent feature width across range, never evaluated on detection); a
-      calibrator.
+      consistent feature width across range, never evaluated on detection).
 - [ ] Tile sidecars are not Aug Studio inputs (a tile does not start at the nadir). To
       augment, run the Aug Studio on the full-picture dataset first; the tile writer
       then needs the augmented dataset to keep `perception.labels` (highlight columns) —
@@ -93,8 +40,6 @@ the module's `.claude/CLAUDE.md`; the detector-input decisions in
       Ultralytics' tips say partial labelling "will not work". Measure how often it
       happens on the first tile datasets (`counts.*.dropped_partial` in the manifest).
 - [ ] Live check 7 (the tiled path in a world mission, `LIVE_CHECKS.md`): needs weights.
-- [x] (2026-10-24) The simulator's catalog no longer matters to Perception: classes
-      come from each world's objects, so `main` (13 classes) and `dev` (29) both work.
 - [ ] **The first image of every stream arrives ~3.06 s late** (one part; all three runs).
       Consistent with a DDS heartbeat repair of the first large RELIABLE sample (Fast DDS
       default period 3 s); not verified, nothing lost. Check on the real boat; a warm-up
@@ -114,13 +59,6 @@ the module's `.claude/CLAUDE.md`; the detector-input decisions in
       before any correction is enabled.
 - [ ] Station uids repeat across GCS streams (image ids restart at every START), as the
       station's own did; a stream-aware uid needs a GCS listener + contract change.
-- [ ] Calibration: held-out split per domain, temperature/Platt, reliability + ECE
-      (DESIGN §4.5, R11).
-- [x] **Dataset labels from the simulator's ground truth** (2026-10-16, your order and
-      decision: read in the node, dataset mode only). `core/sim_labels.py`,
-      `ros/ground_truth.py`, the offline `--world --ground-truth-bag` re-labelling,
-      `tools/draw_labels.py`. Checked against noise-free renders of recorded pings
-      (`LIVE_CHECKS.md` check 6).
 - [ ] **Label geometry approximations** (measured, check 6):
   - rested or tilted objects use their `length × width` footprint at `yaw`, ignoring
     roll/pitch;
@@ -143,8 +81,6 @@ the module's `.claude/CLAUDE.md`; the detector-input decisions in
       simulator renders bin k over `[k·L/N, (k + 1)·L/N)`. That is 0.08 %, under one bin
       at full range. The labels use the simulator's, and the GCS georeferencing carries
       the 0.08 %.
-- [x] `data.yaml` train/val placeholders: superseded by the tile datasets' `data.yaml`
-      (`images/{train,val,test}`), trained with Ultralytics 8.4.184 in the smoke run.
 - [ ] Aug Studio intensity mapping for `identity` datasets only (REQUESTS R-3; `fixed_gray`
       datasets declare `log`, resolved).
 - [ ] Measure σ_nav, σ_ψ, σ_h against USBL / RTK. They are assumptions today

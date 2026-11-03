@@ -153,21 +153,17 @@ class PerceptionNode(Node):
     def _open_dataset(self, p: dict) -> DatasetWriter:
         cfg = {"pipeline": self.pipeline.config.to_json(), "node": {
             k: p[k] for k in ("mode", "dataset_name", "world_dir", "join_timeout_s")}}
-        forbidden = [sss_data_dir(self.root)]
-        labels = self._open_labels(p)
+        kw = dict(world_dir=p["world_dir"], config=cfg,
+                  forbidden_roots=[sss_data_dir(self.root)],
+                  label_source=self._open_labels(p),
+                  detector_input=self.pipeline.detector_input_info())
         try:
             if p["dataset_path"]:
                 # Claimed by the launch file (which also points the
                 # ground-truth recorder into it).
                 d = Path(p["dataset_path"])
-                return DatasetWriter(d, name=d.name, world_dir=p["world_dir"],
-                                     config=cfg, forbidden_roots=forbidden,
-                                     label_source=labels,
-                                     detector_input=self.pipeline.detector_input_info())
-            return DatasetWriter.create(self.root, p["dataset_name"],
-                                        world_dir=p["world_dir"], config=cfg,
-                                        forbidden_roots=forbidden, label_source=labels,
-                                        detector_input=self.pipeline.detector_input_info())
+                return DatasetWriter(d, name=d.name, **kw)
+            return DatasetWriter.create(self.root, p["dataset_name"], **kw)
         except DatasetError as exc:
             self.get_logger().error(f"dataset mode refused: {exc}")
             raise

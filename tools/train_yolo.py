@@ -56,7 +56,6 @@ import argparse
 import hashlib
 import json
 import platform
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -65,34 +64,15 @@ PKG = Path(__file__).resolve().parents[1] / "blueboat_perception"
 if str(PKG) not in sys.path:
     sys.path.insert(0, str(PKG))
 
-from blueboat_perception import __version__  # noqa: E402
 from blueboat_perception.core.dataroot import claim_dir, data_root, safe_name  # noqa: E402
+from blueboat_perception.core.detectors.yolo import file_sha256  # noqa: E402
+from make_tile_dataset import code_version  # noqa: E402
 
 AUGMENTATION = {"hsv_h": 0.0, "hsv_s": 0.0, "hsv_v": 0.2, "degrees": 0.0, "translate": 0.0,
                 "scale": 0.0, "shear": 0.0, "perspective": 0.0, "flipud": 0.5,
                 "fliplr": 0.5, "bgr": 0.0, "mosaic": 0.0, "close_mosaic": 0,
                 "mixup": 0.0, "cutmix": 0.0, "copy_paste": 0.0}
 MODEL_SCHEMA = "blueboat_perception/model/1"
-
-
-def sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def code_version() -> dict:
-    root = Path(__file__).resolve().parents[1]
-    try:
-        sha = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
-                             capture_output=True, text=True, timeout=10).stdout.strip()
-        dirty = bool(subprocess.run(["git", "-C", str(root), "status", "--porcelain"],
-                                    capture_output=True, text=True, timeout=10).stdout.strip())
-    except (OSError, subprocess.SubprocessError):
-        sha, dirty = "", None
-    return {"perception_version": __version__, "git_commit": sha or None, "dirty": dirty}
 
 
 def versions() -> dict:
@@ -175,7 +155,7 @@ def main(argv=None) -> int:
             "seed": a.seed, "train_args": train_args, "augmentation": aug,
             "versions": versions(), "code": code_version(),
             "weights": {"best": "weights/best.pt",
-                        "best_sha256": sha256(best) if best.is_file() else None},
+                        "best_sha256": file_sha256(best) if best.is_file() else None},
             "tile_val_metrics": metrics,
             "note": "tile-level validation metrics from Ultralytics (val worlds); the "
                     "evaluation is tools/evaluate_detector.py on whole pictures"}

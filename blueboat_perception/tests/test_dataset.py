@@ -15,7 +15,7 @@ from blueboat_perception.core.dataset import (MANIFEST_SCHEMA, DatasetError,
                                               DatasetWriter, acquisition_meta)
 from blueboat_perception.core.image import SeabedImageInput
 from blueboat_perception.core.session import iter_session
-from conftest import make_db, make_metadata, write_session
+from conftest import make_db, make_metadata
 
 AUG = Path(__file__).resolve().parents[3] / "SSS-Dataset-Aug-Studio"
 HAVE_PYDANTIC = importlib.util.find_spec("pydantic") is not None
