@@ -314,7 +314,16 @@ records and the status are computed without it.
 | `/side_scan_sonar/ground_truth/sensor` | `std_msgs/String` (JSON, every ping cycle) | RELIABLE, KEEP_LAST 200, VOLATILE (the simulator publishes default 10) | the transducer pose each side was rendered from, per device `ping_number` |
 | `/side_scan_sonar/ground_truth/contacts` | `std_msgs/String` (JSON, cycles with contacts) | same | which objects a ping saw, `visible`, `ghost`/`via`, the mask-measured `shadow_bins` |
 
-Schemas: BlueBoat-SSS-Sim `docs/topics.md` §5 and its sensor row.
+Schemas: BlueBoat-SSS-Sim `docs/topics.md` §5 and its sensor row. Since 2026-11-11 the simulator's
+**ray-cast** sonar publishes contacts too when its profile says `raycast.labels.enabled` (the
+harbour profiles do): read off its own mesh by its own visibility test, same schema.
+
+**Range scale (2026-11-11).** The sensor message carries `range_scale`, the factor from true slant
+range to the range the image shows it at. The ray-cast sonar, like the real Omniscan, times echoes
+with the water's sound speed and bins them with the device's 1500 m/s, so a point at true range R is
+imaged at `R · range_scale` (0.973 at 1541 m/s). `core/sim_labels.py` multiplies every slant range it
+computes from true geometry by it; a message without the key (the geometric sonar before that date)
+means 1.0. Without it a ray-cast label box sits about 0.4 m past its echo at 15 m.
 
 **Label files.**
 - `labels/<stem>.txt`: one YOLO line `class cx cy w h` per box (normalised by the

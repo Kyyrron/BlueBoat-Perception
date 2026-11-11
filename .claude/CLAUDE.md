@@ -75,7 +75,14 @@ GCS seabed image (raw dB + PNG + metadata) -> join -> preprocess (detector input
   - Names are claimed exclusively (`-2`, `-3` …); nothing is ever overwritten.
 - **Started by MCS** (`launch_manager.perception_command`): every real-robot launch
   (`mode:=normal`) and every personalized-world Gazebo launch (Session mode normal /
-  dataset). Never for the empty world or a bag replay.
+  dataset, plus `use_sim_time:=true`). Never for the empty world or a bag replay.
+- **Clock (2026-11-07).** `use_sim_time` (launch argument, default false) puts the dataset
+  label wait (`label_wait_s`) on `/clock` and records the ground-truth bag with
+  `--use-sim-time`, so a simulation slowed below real time (the ray-cast sonar) labels
+  and records as at real speed. The image join and every latency stay wall (provenance).
+  **But the ray-cast publishes no `ground_truth/contacts` yet** (`RenderedPing.contacts` is `[]`,
+  simulator `TODO.md`). Dataset mode on a ray-cast run therefore writes images with **empty** label
+  files. Use the geometric sonar for labelled datasets until that is built.
 
 ## 3. Non-negotiables
 1. **Core ROS-free and deterministic.** No rclpy, Qt, OpenCV, torch or ultralytics at

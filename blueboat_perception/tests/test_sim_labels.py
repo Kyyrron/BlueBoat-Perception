@@ -164,6 +164,37 @@ def test_the_renderers_longer_mask_shadow_wins():
     assert ca - cb >= 150
 
 
+def test_range_scale_moves_every_label_range_toward_the_sonar():
+    """The ray-cast sonar (and the real device) image a point at true range R
+    at R * range_scale (echo delays at the water's sound speed, bins at
+    1500 m/s). The label must follow, or its box sits past the echo."""
+    o = obj(y=15.0)
+    pose = [0.3, 0.285, SZ, 0, 0, 0]
+    kw = dict(bin_m=BIN, range_max_m=BIN * N, n_bins=N)
+    g1 = SL.ping_object_bins(pose, 1, o, {"shadow_bins": 0.0}, ZSEA, **kw)
+    scale = 1500.0 / 1541.3
+    g2 = SL.ping_object_bins(pose, 1, o, {"shadow_bins": 0.0}, ZSEA, range_scale=scale, **kw)
+    assert g2["s_hl"] == pytest.approx(g1["s_hl"] * scale)
+    assert g2["s_tip"] == pytest.approx(g1["s_tip"] * scale)
+    # about 2.7 % of 15 m: a dozen bins at this bin size
+    assert 10 <= g1["k"][0] - g2["k"][0] <= 14
+    # shadow_bins is already in device bins: it is added unscaled
+    g3 = SL.ping_object_bins(pose, 1, o, {"shadow_bins": 500.0}, ZSEA, range_scale=scale, **kw)
+    assert g3["s_mask"] == pytest.approx(g2["s_mask"] + 500.0 * BIN)
+
+
+def test_the_sensor_message_carries_the_range_scale():
+    def sensor(extra):
+        return {"t_sim": 1.0, "stamp": 51.0, **extra,
+                "sensors": {"port": {"pose": [0, 0.285, SZ, 0, 0, 0], "altitude_m": 3.8,
+                                     "ping_number": 5, "dropped": False}}}
+    for extra, want in (({}, 1.0), ({"range_scale": 0.9732}, 0.9732),
+                        ({"range_scale": 5.0}, 1.0), ({"range_scale": "x"}, 1.0)):
+        buf = SL.GroundTruthBuffer()
+        buf.add_sensor(sensor(extra))
+        assert buf.lookup("port", 5, 51.0).range_scale == pytest.approx(want)
+
+
 def test_a_thin_oblique_object_is_seen_where_the_beam_crosses_it():
     rope = obj(typ="rope", yaw=math.radians(60.0), L=4.0, Wd=0.03, h=0.02, x=0.4)
     buf = SL.GroundTruthBuffer()

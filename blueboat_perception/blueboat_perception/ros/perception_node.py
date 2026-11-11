@@ -15,7 +15,16 @@ Publishes:
 
 Contract: ``docs/topics.md``. Latency is wall clock, measured from the
 receipt of an image's last part to the end of publishing; data times are
-the images' own (sonar ROS time), so the node needs no ``use_sim_time``.
+the images' own (sonar ROS time), so the records need no ``use_sim_time``.
+
+Clock (2026-11-07). The dataset label wait (``label_wait_s``: a picture's
+ground truth arrives one ping later) is a wait on the *simulated world*:
+under ``use_sim_time`` (MCS passes it for every simulated world run) it runs
+on the node clock, so a simulation slowed below real time (Gazebo
+real-time factor < 1, the ray-cast sonar) labels exactly as a real-speed
+run does. Without it (every real-robot launch) it is wall monotonic, as
+before. The image join and every latency stay wall: the GCS publishes an
+image's three parts together, whatever the simulation speed.
 """
 
 from __future__ import annotations
@@ -287,14 +296,21 @@ class PerceptionNode(Node):
         arrived, at most ``label_wait_s``."""
         if self.label_source is not None and (self._pending_writes
                                               or not self.label_source.ready(img)):
-            self._pending_writes.append((time.monotonic() + self.label_wait_s,
+            self._pending_writes.append((self._world_now() + self.label_wait_s,
                                          img, record, inp))
             self._drain_writes()
             return
         self._write_sample(img, record, inp)
 
+    def _world_now(self) -> float:
+        """The label wait's clock: the node clock under ``use_sim_time``,
+        else ``time.monotonic()`` (module docstring)."""
+        if self.get_parameter("use_sim_time").value:
+            return self.get_clock().now().nanoseconds * 1e-9
+        return time.monotonic()
+
     def _drain_writes(self, force: bool = False) -> None:
-        now = time.monotonic()
+        now = self._world_now()
         while self._pending_writes:
             deadline, img, record, inp = self._pending_writes[0]
             if not (force or now >= deadline or self.label_source.ready(img)):

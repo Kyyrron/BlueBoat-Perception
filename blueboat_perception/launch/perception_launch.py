@@ -2,7 +2,7 @@
 
     ros2 launch blueboat_perception perception_launch.py \
         [mode:=normal|dataset] [dataset_name:=<YYYY_MM_DD-HH_MM_SS>-<note>] \
-        [world_dir:=<world folder>] [data_dir:=<root>]
+        [world_dir:=<world folder>] [data_dir:=<root>] [use_sim_time:=true|false]
 
 * ``mode:=normal`` (default): the node only.
 * ``mode:=dataset``: the node also writes a dataset. This file claims the
@@ -19,6 +19,12 @@
 
 MCS starts this for Gazebo runs of a personalized world (the chosen
 session mode) and for every real-robot launch (normal).
+
+``use_sim_time`` (default false; MCS passes true for every simulated world
+run, 2026-11-07): the node's label wait runs on /clock, and the
+ground-truth bag records with ``--use-sim-time``, so its timeline is the
+simulation's -- the same whether the run was slowed below real time (the
+ray-cast sonar) or not.
 """
 
 import time
@@ -41,8 +47,10 @@ def _setup(context):
     name = LaunchConfiguration("dataset_name").perform(context).strip()
     world_dir = LaunchConfiguration("world_dir").perform(context).strip()
     data_dir = LaunchConfiguration("data_dir").perform(context).strip()
+    sim_time = (LaunchConfiguration("use_sim_time").perform(context).strip().lower()
+                in ("1", "true", "yes"))
     params = {"mode": mode, "dataset_name": name, "world_dir": world_dir,
-              "data_dir": data_dir}
+              "data_dir": data_dir, "use_sim_time": sim_time}
     actions = []
     if mode == "dataset":
         if not name:
@@ -54,6 +62,7 @@ def _setup(context):
         if world_dir:
             actions.append(ExecuteProcess(
                 cmd=["ros2", "bag", "record", "-o", str(Path(d) / "ground_truth_bag"),
+                     *(["--use-sim-time"] if sim_time else []),
                      "--topics", *GROUND_TRUTH_TOPICS],
                 name="perception_ground_truth_recorder", output="screen"))
         else:
@@ -76,6 +85,9 @@ def generate_launch_description():
         DeclareLaunchArgument("world_dir", default_value="",
                               description="the simulated world folder (recorded in the "
                                           "dataset manifest; enables the ground-truth bag)"),
+        DeclareLaunchArgument("use_sim_time", default_value="false",
+                              description="true in a simulation graph: the label wait "
+                                          "and the ground-truth bag on /clock"),
         DeclareLaunchArgument("data_dir", default_value="",
                               description="data root override (else $BLUEBOAT_DATA_DIR, "
                                           "then the workspace)"),

@@ -48,6 +48,14 @@ dicts, and the offline CLI reads the same dicts from the dataset's archival bag.
   of the renderer's boxcar (5 bins at the default acquisition).
 - **Bins:** the device's own, ``[k·L/N, (k + 1)·L/N)``. The GCS's
   ``bin_pitch_m`` is ``L/(N − 1)``, so ``L/N = bin_pitch_m·(N − 1)/N``.
+- **Range scale** (2026-11-11): the sensor message's ``range_scale`` is the
+  factor from TRUE slant range to the range the image shows it at. The
+  simulator's ray-cast sonar, like the real Omniscan, times echoes with the
+  water's sound speed and bins them with the device's 1500 m/s, so a point at
+  true range R is imaged at ``R·range_scale`` (0.973 at 1541 m/s; 1.0 for the
+  geometric sonar and for a message without the key). Every slant range
+  computed here from true geometry is multiplied by it; ``shadow_bins`` is
+  already in device bins.
 - **Columns:** port ``j = W/2 − 1 − k``, starboard ``j = W/2 + k``.
 - **Boxes:** one per object, side and contiguous run of rows: the union of the
   rows' intervals.
@@ -230,6 +238,8 @@ class PingTruth:
     pose: Tuple[float, float, float, float, float, float]
     altitude: float
     contacts: List[dict] = field(default_factory=list)
+    #: true slant range -> imaged range (module docstring); 1.0 without the key
+    range_scale: float = 1.0
 
 
 class GroundTruthBuffer:
@@ -259,6 +269,12 @@ class GroundTruthBuffer:
             self.counts["bad_messages"] += 1
             return
         self.counts["sensor_messages"] += 1
+        try:
+            scale = float(msg.get("range_scale", 1.0))
+        except (TypeError, ValueError):
+            scale = 1.0
+        if not 0.8 <= scale <= 1.2:               # not a sound-speed ratio: ignore
+            scale = 1.0
         for side, s in sensors.items():
             pn = s.get("ping_number")
             if pn is None or s.get("dropped"):
@@ -267,7 +283,8 @@ class GroundTruthBuffer:
             key = (str(side), int(pn))
             entry = PingTruth(side=key[0], ping_number=key[1], t_sim=t_sim, stamp=stamp,
                               pose=tuple(float(v) for v in s["pose"]),
-                              altitude=float(s.get("altitude_m", 0.0)))
+                              altitude=float(s.get("altitude_m", 0.0)),
+                              range_scale=scale)
             waiting = self._orphans.get(key)
             if waiting:
                 keep = []
@@ -364,9 +381,11 @@ def ping_object_bins(pose, sign: int, o: WorldObject, contact: dict, z_seabed: O
                      *, bin_m: float, range_max_m: float, n_bins: int,
                      beam_rad: float = math.radians(DEFAULT_BEAM_DEG),
                      margin_bins: int = DEFAULT_RANGE_MARGIN_BINS,
-                     strip_sigmas: float = DEFAULT_STRIP_SIGMAS) -> Optional[dict]:
+                     strip_sigmas: float = DEFAULT_STRIP_SIGMAS,
+                     range_scale: float = 1.0) -> Optional[dict]:
     """The bins object ``o`` occupies in one ping (module docstring), or None
-    when the ping's beam strip misses its footprint."""
+    when the ping's beam strip misses its footprint. ``range_scale``: true
+    slant range -> imaged range (the sensor message's; 1.0 = none)."""
     sx, sy, sz, _roll, _pitch, yaw = pose
     fwd, look = yaw, yaw + sign * math.pi / 2.0
     rx, ry = o.x - sx, o.y - sy
@@ -391,14 +410,17 @@ def ping_object_bins(pose, sign: int, o: WorldObject, contact: dict, z_seabed: O
     if span is None:
         return None
     a_min, a_max = max(span[0], 0.0), max(span[1], 0.0)
-    s_near = math.hypot(a_min, dz_top)
-    s_hl = max(math.hypot(a_max, dz_top), math.hypot(a_min, dz))
+    k_r = float(range_scale)
+    s_near = k_r * math.hypot(a_min, dz_top)
+    s_hl = k_r * max(math.hypot(a_max, dz_top), math.hypot(a_min, dz))
     if o.height > 0.0 and dz_top > 1e-3:
-        s_tip = math.hypot(a_max * dz / dz_top, dz)
+        s_tip = k_r * math.hypot(a_max * dz / dz_top, dz)
     else:
-        s_tip = math.hypot(a_max, dz) if o.height <= 0.0 else range_max_m
+        s_tip = k_r * math.hypot(a_max, dz) if o.height <= 0.0 else range_max_m
     # the renderer's mask length, started at the far edge THIS ping crosses
-    s_mask = math.hypot(a_max, dz) + max(float(contact.get("shadow_bins", 0.0)), 0.0) * bin_m
+    # (``shadow_bins`` is already in device bins)
+    s_mask = k_r * math.hypot(a_max, dz) \
+        + max(float(contact.get("shadow_bins", 0.0)), 0.0) * bin_m
     s_end = max(s_tip, s_mask, s_hl)
     top = n_bins - 1
     k0 = int(math.floor(s_near / bin_m)) - margin_bins
@@ -663,4 +685,5 @@ class SimGroundTruthLabelSource:
               bin_m: float, range_max: float, half: int) -> Optional[dict]:
         return ping_object_bins(ping.pose, sign, o, contact, self._seabed.get(o.object_id),
                                 bin_m=bin_m, range_max_m=range_max, n_bins=half,
-                                beam_rad=self.beam_rad, margin_bins=self.range_margin_bins)
+                                beam_rad=self.beam_rad, margin_bins=self.range_margin_bins,
+                                range_scale=ping.range_scale)

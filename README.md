@@ -84,7 +84,8 @@ worlds; split by world, never by image; the test worlds are never used to tune a
 
 ```bash
 cd ~/ros2_ws/src/BlueBoat-SideScanSonar/BlueBoat-Perception
-# 0. datasets: one dataset-mode run per world (MCS: launch dialog, Session = Dataset creation)
+# 0. datasets: one dataset-mode run per world (MCS: launch dialog, Session = Dataset creation;
+#    Sonar model Geometric: the ray-cast publishes no ground-truth contacts yet, so its labels are empty)
 #    -> ~/ros2_ws/data/Dataset_data/<YYYY_MM_DD-HH_MM_SS>-<note>/
 # 1. a split file, by world folder name (or dataset folder name):
 cat > split.yaml <<'YAML'
