@@ -19,7 +19,7 @@ GCS seabed image (raw dB + PNG + metadata) -> join -> preprocess (detector input
 - `blueboat_perception/core/` — ROS-free, deterministic: numpy + stdlib. OpenCV (PNG
   encode/decode) and PyYAML (world files) are imported lazily, inside functions.
   - `image.py` `SeabedImageInput` (`from_wire` / `from_session_files`, georef conventions);
-    `geometry.py` pixel → world (conventions 1 / 2), spans, footprint, turns;
+    `geometry.py` pixel → world (conventions 1 / 2 / 3, one `to_world`), spans, footprint, turns;
   - `preprocess.py` detector input (`fixed_gray` / `identity`, mask, disabled options);
   - `detectors/` `dummy` (default) and `yolo` (Ultralytics adapter over tiles);
     `tiling.py` across-track tiles; `merge.py` `nms` / `greedy_nmm`;
@@ -52,6 +52,12 @@ GCS seabed image (raw dB + PNG + metadata) -> join -> preprocess (detector input
 | `/sss_ai/image_records` | `std_msgs/String`, `blueboat_perception/image_record/1` | out (Belief, analysis) | RELIABLE, KEEP_LAST 100 |
 | `/sss_ai/perception/status` | `std_msgs/String`, 1 Hz | out | RELIABLE, depth 1, TRANSIENT_LOCAL |
 
+- **Georef conventions** (topics.md §2): 1 (no `georef`), 2 (lateral lever, `bottom_m`), 3
+  (since 2026-11-15: 2 placed from the transducers' point, `pose + R(yaw)·(lever_arm_m.x, 0)`,
+  the station's operation order, bit-exact with its grids). The arm comes from each picture,
+  never hard-coded (−0.345 m today: adopted, not measured). Any other convention is rejected
+  (`InputError`). An arm of 0 leaves the row pose untouched, so conventions 1 and 2 are
+  byte-identical to before; the record schema stays `image_record/1`.
 - Image key `"<stream_id>/<image_id>"`, in `Image.header.frame_id` (a key, not a TF frame)
   and in the envelope. The image QoS must equal the GCS publishers' (CM-4).
 - **Perception is the station's only detection source.** The GCS runs no detector; its
@@ -179,13 +185,17 @@ python3 tools/evaluate_detector.py <datasets...> --split split.yaml --on val|tes
 ```
 
 ## 6. Gates
-- **Perception pytest** (no lint or type checker configured): **155 pass / 16 skip** with
-  system python and no ROS, corpus, torch or sibling repos (2026-11-03). Skips: ROS node
+- **Perception pytest** (no lint or type checker configured): **170 pass / 16 skip** with
+  system python and no ROS, corpus, torch or sibling repos (2026-11-15; before that date
+  `tests/test_corpus.py` failed at collection when no corpus was present). On the laptop with ROS
+  on the path and the corpus: **204 pass / 28 skip**. Skips: ROS node
   and bag tests, corpus tests (`$BLUEBOAT_DATA_DIR/data/SSS_data` or
   `~/ros2_ws/data/SSS_data`), real-Ultralytics tests, Aug Studio sidecar tests (need
   pydantic and the Aug Studio beside this module:
   `SSS-Dataset-Aug-Studio/.venv/bin/python -m pytest tests/test_dataset.py`). On the
-  laptop the node and corpus tests run too.
+  laptop the node and corpus tests run too. A new session's pictures (convention 3 since
+  2026-11-15) must stay bit-exact in `test_corpus.py`. To test a session without placing it under
+  `~/ros2_ws/data/SSS_data`, set `BLUEBOAT_DATA_DIR` to a root holding `SSS_data/<folder>`.
 - **SSS** shares this contract: run its `tests/test_perception_golden.py` and
   `tests/test_perception_bridge.py` on the laptop (they need libEGL for PySide6) whenever
   the dummy's records could change.

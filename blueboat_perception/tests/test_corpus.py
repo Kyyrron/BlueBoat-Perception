@@ -1,8 +1,9 @@
 """The station's own conversion and its own dummy, on every on-disk session.
 
-* convention 1: Perception's grids equal the ``world_x``/``world_y`` of
-  each ``_world.npz`` the GCS wrote (tolerance 1 float32 ulp; the exact
-  share is asserted to be 100 % on this machine's numpy);
+* every georef convention on disk (1, 2 and, since 2026-11-15, 3):
+  Perception's grids equal the ``world_x``/``world_y`` of each
+  ``_world.npz`` the GCS wrote (tolerance 1 float32 ulp; the exact share
+  is asserted to be 100 % on this machine's numpy);
 * the dummy: wherever the station's in-process ``dummy_center_analyzer``
   ran (live sessions: non-empty ``detections``), Perception's dummy
   reproduces pixel, world, class, confidence and row time exactly.
@@ -25,12 +26,17 @@ DIRS = corpus_image_dirs()
 pytestmark = pytest.mark.skipif(not DIRS, reason="no GCS sessions on this machine")
 
 
+def _folder_id(p) -> str:
+    # with no corpus pytest passes a NOTSET placeholder here, not a Path
+    return f"{p.parent.name}/{p.name}" if hasattr(p, "parent") else str(p)
+
+
 def _ulp(a, b):
     return int(np.max(np.abs(a.view(np.int32).astype(np.int64)
                              - b.view(np.int32).astype(np.int64)))) if a.size else 0
 
 
-@pytest.mark.parametrize("folder", DIRS, ids=lambda p: p.parent.name + "/" + p.name)
+@pytest.mark.parametrize("folder", DIRS, ids=_folder_id)
 def test_grids_equal_the_stations(folder):
     files = list_images(folder)
     exact = 0
@@ -44,7 +50,7 @@ def test_grids_equal_the_stations(folder):
     assert exact == len(files), f"{exact}/{len(files)} bit-exact"
 
 
-@pytest.mark.parametrize("folder", DIRS, ids=lambda p: p.parent.name + "/" + p.name)
+@pytest.mark.parametrize("folder", DIRS, ids=_folder_id)
 def test_dummy_equals_the_stations_dummy(folder):
     pipeline = Pipeline()
     compared = 0

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import copy
 import json
+import math
 
 import numpy as np
+import pytest
 
 from blueboat_perception.core.image import SeabedImageInput
 from blueboat_perception.core.pipeline import Pipeline
@@ -13,8 +16,9 @@ from blueboat_perception.core.session import iter_session, list_images
 from conftest import envelope, make_db, make_metadata, write_session
 
 
-def test_wire_and_files_give_identical_records(tmp_path):
-    metas = [make_metadata(image_id=i, t0=50.0 + i) for i in range(3)]
+@pytest.mark.parametrize("conv", [2, 3])
+def test_wire_and_files_give_identical_records(tmp_path, conv):
+    metas = [make_metadata(image_id=i, t0=50.0 + i, convention=conv) for i in range(3)]
     dbs = [make_db(seed=10 + i) for i in range(3)]
     write_session(tmp_path / "s", metas, dbs)
     pipeline = Pipeline()
@@ -29,6 +33,43 @@ def test_wire_and_files_give_identical_records(tmp_path):
         rec, _ = pipeline.run(img)
         off.append(dict(rec, source="offline", provenance={"y": 2}))
     assert [comparable_json(r) for r in live] == [comparable_json(r) for r in off]
+    assert {r["input"]["georef_convention"] for r in off} == {conv}
+
+
+def test_convention_3_moves_only_the_world_positions():
+    """Same picture, convention 2 vs 3: every world point moves by R(yaw)·(a, 0)
+    of its row; nothing else in the record changes but the georef echo."""
+    db = make_db(seed=4)
+    a = -0.345
+    m2, m3 = make_metadata(convention=2), make_metadata(convention=3, lever_x=a)
+    yaw = np.array([r["yaw_rad"] for r in m2["rows_data"]])
+    pipe = Pipeline()
+    r2, d2 = pipe.run(SeabedImageInput.from_metadata(m2, db.copy()))
+    r3, d3 = pipe.run(SeabedImageInput.from_metadata(m3, db.copy()))
+    assert r3["input"]["georef_convention"] == 3 and r3["input"]["georef"]["lever_arm_m"]["x"] == a
+    assert len(d2) == len(d3) >= 1
+    for p, q in zip(d2, d3):
+        row = p["pixel"][0]
+        shift = (math.cos(yaw[row]) * a, math.sin(yaw[row]) * a)
+        assert q["world_xy"][0] - p["world_xy"][0] == pytest.approx(shift[0], abs=1e-5)
+        assert q["world_xy"][1] - p["world_xy"][1] == pytest.approx(shift[1], abs=1e-5)
+    for side in ("port", "starboard"):
+        for p, q in zip(r2["sides"][side]["polygon_xy"], r3["sides"][side]["polygon_xy"]):
+            assert math.hypot(q[0] - p[0], q[1] - p[1]) == pytest.approx(abs(a), abs=1e-9)
+    for p, q in zip(r2["footprint"]["outline_xy"], r3["footprint"]["outline_xy"]):
+        assert math.hypot(q[0] - p[0], q[1] - p[1]) == pytest.approx(abs(a), abs=1e-9)
+
+    def strip(rec, dets):
+        rec = copy.deepcopy(rec)
+        rec["input"].pop("georef")
+        rec["input"].pop("georef_convention")
+        for s in rec["sides"].values():
+            s.pop("polygon_xy")
+        rec["footprint"].pop("outline_xy")
+        for d in rec["detections"]:
+            d.pop("world_xy")
+        return comparable_json(rec)
+    assert strip(r2, d2) == strip(r3, d3)
 
 
 def test_session_reader_orders_by_id_and_falls_back_on_the_folder_name(tmp_path):

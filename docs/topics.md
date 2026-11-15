@@ -73,7 +73,7 @@ sessions on disk lack the starred keys):
 | `t_start_s` / `t_end_s` | s | time of row 0 (**newest**) / of the last row (oldest) |
 | `bin_pitch_m` | m | slant metres per column |
 | `row_geometry` | — | `square` (default) or `ping` |
-| `georef`★ | — | `{"convention": 2, "altitude": "bottom_m", "lever_arm_m": {"x": 0.0, "y_port": 0.285, "y_stbd": 0.285}}`; absent = convention 1 |
+| `georef`★ | — | `{"convention": 2, "altitude": "bottom_m", "lever_arm_m": {"x": 0.0, "y_port": 0.285, "y_stbd": 0.285}}`; since 2026-11-15, when the pings carry the fore/aft arm, `{"convention": 3, …, "lever_arm_m": {"x": -0.345, …}}` (same keys, schema still 5); absent = convention 1. Conventions below |
 | `display_model`, `display_note`, `pixel_convention` | — | as today (P4) |
 | `rows_data[i]` | | per picture row (newest first): |
 | …`t_s` | s | row time |
@@ -82,7 +82,7 @@ sessions on disk lack the starred keys):
 | …`range_m` | m | configured half-range |
 | …`speed_mps` | m/s | along-track speed estimate (5 s median) |
 | …`altitude_m` | m | `water_depth` (altitude + 0.15 m submersion live; depth-mode value offline). Used by **convention 1** |
-| …`bottom_m` | m | tracked transducer altitude (FBR), every depth mode. Used by **convention 2** |
+| …`bottom_m` | m | tracked transducer altitude (FBR), every depth mode. Used by **conventions 2 and 3** |
 | …`ping_index`, `along_track_m` | —, m | source ping within the window; along-track position |
 | …`gain_port_db`, `gain_stbd_db` | dB | receive-gain step removed by the display model |
 | …`roll_rad`★, `pitch_rad`★ | rad | from `/mavros/imu/data` (mavros real / shim sim), latest at the ping's reception; `null` if none |
@@ -91,6 +91,23 @@ sessions on disk lack the starred keys):
 | …`port_ping_number`★, `stbd_ping_number`★ | — | device ping numbers of the row's source ping; 0 = side absent |
 | `boat` | — | summary (as today) |
 | `detections` | — | always `[]` since 2026-10-16 (schema ≤ 4 sessions: the station's former in-process dummy) |
+
+**Georef conventions** (pixel → world; `core/geometry.py`, one function for all three). Column
+`j`: `k = W/2 − 1 − j` (port) or `j − W/2` (starboard), `s = (k + 0.5)·bin_pitch_m`; `(x, y, yaw)` =
+the row's `x_m`, `y_m`, `yaw_rad`, **the navigation pose** in every convention.
+
+| Convention | Lateral `y_local` (+ port) | World |
+|---|---|---|
+| 1 (no `georef`) | `±sqrt(max(s² − altitude_m², 0))` | `(x − sin(yaw)·y_local, y + cos(yaw)·y_local)` |
+| 2 (2026-10-16) | `±(lever_side + sqrt(max(s² − bottom_m², 0)))`, `lever_side` = `lever_arm_m.y_port` / `y_stbd` | as 1 |
+| 3 (2026-11-15) | as 2 | from the transducers' point: `a = lever_arm_m.x` (+ forward), `(x + cos(yaw)·a − sin(yaw)·y_local, y + sin(yaw)·a + cos(yaw)·y_local)` |
+
+- `lever_arm_m.x` is used under convention 3 only; convention 2 = convention 3 with `a = 0`.
+  The arm comes from each picture (the value −0.345 m is adopted from the simulator's profile,
+  not measured on the boat); Perception hard-codes none.
+- **Any other convention (0, 4 and above) is rejected**: the picture raises `InputError` at
+  input. Live, it is logged and counted in the status's `input_errors`; offline, the CLI stops
+  with the message. No position is ever computed by a rule the picture does not declare.
 
 ## 3. `/sss_ai/detections` — `vision_msgs/Detection2DArray`
 
@@ -117,14 +134,23 @@ and the uids are the record's. With the dummy (score 0.5) nothing changes.
 One record per image, **including images without detections**. Canonical JSON (sorted
 keys, compact, no NaN).
 
+**The schema stays `image_record/1` with georef convention 3 (2026-11-15).** Placing convention 3
+from the transducers' point adds, renames and retypes no field. It changes values, for
+convention-3 inputs only, toward what `world_xy` is defined as (the station's grid). Records of
+conventions 1 and 2 are byte-identical to before, `processing.perception_version` included (a
+version bump would change every record's bytes). `input.georef_convention` tells which placement a
+record used. No convention-3 record had been written before the change (none in the live logs of
+2026-11-15).
+
 ```json
 {"schema": "blueboat_perception/image_record/1",
  "key": "<stream_id>/<image_id>", "stream_id": "…", "image_id": 12,
  "source": "live",                       // live | offline
  "input": {"schema": "blueboat_sss/seabed_image/1", "metadata_schema": 5,
-           "georef_convention": 2,
+           "georef_convention": 2,           // 3 for a picture whose pings carry the fore/aft arm
            "georef": {"convention": 2, "altitude": "bottom_m",
                       "lever_arm_m": {"x": 0.0, "y_port": 0.285, "y_stbd": 0.285}},
+                      // convention 3: {"convention": 3, …, "lever_arm_m": {"x": -0.345, …}}
            "row_geometry": "square",
            "rows": 256, "cols": 2402, "bin_pitch_m": 0.01668},
  "processing": {"perception_version": "0.1.0",
@@ -184,7 +210,8 @@ between a live record and the offline record of the same saved image.
 |---|---|---|
 | `track.*` | per row, **row 0 newest**, aligned with the image rows | boat state at each row |
 | `track.heading_rad` | rad, ENU | = metadata `yaw_rad` |
-| `track.georef_altitude_m` | m | the altitude the image's convention uses per row (conv. 1 `altitude_m`, conv. 2 `bottom_m`), ≥ 0 |
+| `track.x_m` / `y_m` | m, world | = metadata `x_m` / `y_m`: the **navigation** pose in every convention (convention 3's arm is applied to the world positions below, never folded into the track) |
+| `track.georef_altitude_m` | m | the altitude the image's convention uses per row (conv. 1 `altitude_m`, conv. 2 and 3 `bottom_m`), ≥ 0 |
 | `track.port_ping_number` / `stbd_ping_number` | — | the rows' device ping numbers (schema ≥ 5; 0 = side absent); `null` on older images |
 | `track.yaw_rate_smoothed_rad_s` | rad/s | the yaw rate averaged over `turn_window_s` of row time (decision 6.2) |
 | `track.turn_radius_m` | m | `r* = v/\|ω\|` (v = row speed, ω = the smoothed rate); `null` when not turning or not moving |
@@ -198,9 +225,9 @@ between a live record and the offline record of the same saved image.
 | `sides.*.present_rows` | rows | rows where that side has ≥ 1 finite sample |
 | `sides.*.seabed_rows` | rows | rows where that side has ≥ 1 valid seabed sample (below) |
 | `sides.*.slant_range_m` | m | [min, max] slant range of valid seabed samples (finite and `s ≥ altitude`) |
-| `sides.*.ground_range_m` | m | the same, through the image's georef convention (lever arm included in conv. 2) |
-| `sides.*.polygon_xy` | m, world | near and far valid-seabed edges every `row_step` rows (+ first and last), closed. **The seabed this image searched on that side** |
-| `footprint.outline_xy` | m, world | port far edge + starboard far edge ring; includes the nadir gap (not searched) |
+| `sides.*.ground_range_m` | m | the same, through the image's georef convention (lateral lever arm included in conv. 2 and 3; the fore/aft arm lies along the heading and does not change it) |
+| `sides.*.polygon_xy` | m, world | near and far valid-seabed edges every `row_step` rows (+ first and last), closed, placed by the image's georef convention (conv. 3: from the transducers' point). **The seabed this image searched on that side** |
+| `footprint.outline_xy` | m, world | port far edge + starboard far edge ring, same placement; includes the nadir gap (not searched) |
 | `summary.one_sided_rows` | rows | rows with one side entirely NaN |
 | `detections` | | `[]` means searched, nothing found (negative evidence); `null` means pixels missing, or (YOLO) no detector input could be built (`status: no_detector_input`), so **unknown** |
 | `processing.detector.params` | — | **YOLO only** (additive, 2026-10-23): `model` {`file`, `sha256`, `card` (from `model.json`: name, family, model, seed, created_utc, data, dataset {name, manifest_sha256})}, `runtime` {runtime, ultralytics, torch, channels, architecture}, `device`, `seed`, `tiling` {mode `tiles`\|`full`, tile, stride, min_valid_fraction}, `input_size`, `score_threshold`, `nms_iou`, `max_det_tile`, `merge` {rule `nms`\|`greedy_nmm`, threshold, metric, score `max`}, `rounding` {box_px 1e-3, score 1e-6}. Absent for the dummy |
@@ -221,7 +248,7 @@ between a live record and the offline record of the same saved image.
 | `dummy` | bool | true for the dummy detector |
 | `pixel` | [row, col] | box centre. For a YOLO box (highlight + shadow) this is mid-box, outward of the object by about half its shadow (accepted 2026-10-23); `world_xy` is the same point |
 | `bbox_px` | [r0, c0, r1, c1] | inclusive pixel box in full-picture pixels (dummy: degenerate; YOLO: merged across tiles, edges rounded half up) |
-| `world_xy` | m, world | through the image's georef convention: the station's own world grid at that pixel (float32 precision, bit-exact) |
+| `world_xy` | m, world | through the image's georef convention: the station's own world grid at that pixel (float32 precision, bit-exact). Under convention 3 that is from the transducers' point, `pose + R(yaw)·(lever_arm_m.x, 0)` (since 2026-11-15; before, convention 3 was placed as 2, 0.345 m along the heading off the grid) |
 | `extent_m` | m | [across, along] drawn extent: 1.0 / 1.0 for a point detection; else the box's slant-bin width and along-track rows |
 | `covariance_xy` | m², world | 2×2 `[[σxx, σxy], [σxy, σyy]]`, model `geometric_v1` (DESIGN §4.6) |
 | `t_row_s` | s | time of its row |

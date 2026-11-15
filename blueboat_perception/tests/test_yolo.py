@@ -114,8 +114,12 @@ def test_all_tiles_of_a_picture_go_in_one_batch_at_256():
     assert rt.calls == [(9, 256, 0.01, 0.7, 300)]
 
 
-def test_offline_equals_live_byte_for_byte(tmp_path):
+@pytest.mark.parametrize("conv", [2, 3])
+def test_offline_equals_live_byte_for_byte(tmp_path, conv):
     metas, dbs = zip(*[picture(image_id=i, obj=(300 + 40 * i, 470 + 40 * i)) for i in range(3)])
+    for m in metas:                              # the picture's georef convention
+        g = make_metadata(convention=conv).get("georef")
+        m["georef"] = g
     write_session(tmp_path / "s", metas, dbs, with_png=False)
     p = pipeline(merge="greedy_nmm")
     live = [comparable_json(run(m, d.copy(), p)[0]) for m, d in zip(metas, dbs)]

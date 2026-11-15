@@ -22,7 +22,8 @@ Rules:
 * unknown or newer metadata schemas are accepted when the required keys are
   present;
 * optional keys that are missing stay ``None``; nothing is invented;
-* ``georef`` absent means convention 1 (every session before the Q6 fix).
+* ``georef`` absent means convention 1 (every session before the Q6 fix);
+  conventions 1, 2 and 3 are placed, any other is rejected (``Georef``).
 """
 
 from __future__ import annotations
@@ -58,12 +59,22 @@ class InputError(ValueError):
     """The metadata lacks a key every supported schema has."""
 
 
+#: The georef conventions Perception can place (``core/geometry.py``).
+KNOWN_CONVENTIONS = (1, 2, 3)
+
+
 @dataclass(frozen=True)
 class Georef:
     """The image's pixel -> world convention (``metadata["georef"]``).
 
     * convention 1: ``y = sign·sqrt(max(s² − altitude_m², 0))``;
-    * convention 2: ``y = sign·(lever_side + sqrt(max(s² − bottom_m², 0)))``.
+    * convention 2: ``y = sign·(lever_side + sqrt(max(s² − bottom_m², 0)))``;
+    * convention 3 (GCS, 2026-11-15): convention 2 placed from the
+      transducers' point ``pose + R(yaw)·(lever_x_m, 0)``. ``lever_x_m``
+      (``lever_arm_m.x``, + forward) is used under convention 3 only.
+
+    Any other convention is rejected (``InputError``): its pixel -> world
+    rule is unknown, and a position is never invented.
     """
 
     convention: int = 1
@@ -78,6 +89,10 @@ class Georef:
         if not g:
             return cls()
         conv = int(g.get("convention", 1))
+        if conv not in KNOWN_CONVENTIONS:
+            raise InputError(f"georef convention {conv} is not supported "
+                             f"(known: {', '.join(map(str, KNOWN_CONVENTIONS))}); "
+                             f"the picture is not placed")
         lever = g.get("lever_arm_m") or {}
         altitude = str(g.get("altitude", "altitude_m" if conv == 1 else "bottom_m"))
         if altitude not in ("altitude_m", "bottom_m"):

@@ -91,7 +91,11 @@ def make_metadata(H: int = 32, W: int = 40, pitch: float = 0.05, *, image_id: in
                   schema: int = 5, convention: Optional[int] = 2,
                   geometry: str = "square", attitude: bool = True,
                   t0: float = 100.0, yaw0: float = 0.3, yaw_rate: float = 0.05,
-                  altitude: float = 0.6, detections=None) -> dict:
+                  altitude: float = 0.6, detections=None,
+                  lever_x: float = -0.345) -> dict:
+    """A GCS-shaped metadata dict. ``convention`` None (no ``georef``, as
+    schema <= 4) = 1, 2, or 3 (the GCS's since 2026-11-15: the georef of 2
+    plus the fore/aft arm ``lever_x``, used only under convention 3)."""
     rows = []
     for i in range(H):                       # row 0 = newest
         t = t0 - 0.05 * i
@@ -118,6 +122,10 @@ def make_metadata(H: int = 32, W: int = 40, pitch: float = 0.05, *, image_id: in
     if convention == 2:
         meta["georef"] = {"convention": 2, "altitude": "bottom_m",
                           "lever_arm_m": {"x": 0.0, "y_port": 0.285, "y_stbd": 0.285}}
+    elif convention == 3:                    # the GCS's georef_for(lever_x)
+        meta["georef"] = {"convention": 3, "altitude": "bottom_m",
+                          "lever_arm_m": {"x": float(lever_x), "y_port": 0.285,
+                                          "y_stbd": 0.285}}
     return meta
 
 

@@ -67,6 +67,56 @@ Corrected on the way (found while reading):
 Still open, not a row of this module: `project_synthesis.md` §13's "Bhandari" (REFERENCES,
 discrepancies), for you to judge.
 
+## R-5 BlueBoat-SSS — a convention-3 twin of the live-path georeference test (2026-11-15)
+
+**Status 2026-11-15: open**, for the BlueBoat-SSS owner. Nothing in BlueBoat-SSS was edited
+(CM-3).
+
+**Need.** `tests/test_perception_golden.py`
+`test_live_perception_path_georeferences_with_convention_2` checks, through the live envelope,
+that Perception's world point equals the station's own grid at that pixel. Its golden pings
+carry no fore/aft arm, so it only exercises convention 2. Since 2026-11-15 every live session
+is georef convention 3, and nothing on the SSS side pins Perception's placement of such a
+picture. Session 06 could not add the twin, because it failed until CR-PER-2 was applied in
+Perception (2026-11-15: `core/geometry.py` `to_world` / `sensor_point`).
+
+**Proposed test** (next to the convention-2 one, same fixtures; `from dataclasses import
+replace` at the top):
+
+```python
+ARM = -0.345
+
+
+@pytest.mark.parametrize("variant", _variants())
+def test_live_perception_path_georeferences_with_convention_3(qapp_module, pings, variant):
+    """Pings carrying the fore/aft arm make convention-3 pictures; through the
+    live envelope, Perception's world point is the station's own convention-3
+    grid at that pixel."""
+    from blueboat_gcs.core import perception_core
+    core, why = perception_core.load()
+    if core is None:
+        pytest.skip(why)
+    g, k = variant.split("/")
+    armed = [replace(p, x_offset_m=ARM) for p in pings]
+    images = cap.run_variant(g, k, armed)
+    assert images
+    for img, record, dets in perception_core.detect(images, core):
+        assert img.georef["convention"] == 3 and img.georef["lever_arm_m"]["x"] == ARM
+        assert record["input"]["georef_convention"] == 3
+        (d,) = dets
+        r, c = d["pixel"]
+        assert d["world_xy"] == [float(img.world_x[r, c]), float(img.world_y[r, c])]
+```
+
+**Checked from outside BlueBoat-SSS** (a copy of the fixtures and this body,
+`~/ros2_ws/sim_runs/sim_acceptance/06_sss_followup_perception/sss_twin/`):
+- 4 passed against the Perception source checkout of 2026-11-15;
+- 4 failed against the committed `HEAD` (`1e9264f`), world x off by 0.345 m.
+
+`perception_core.load()` takes the installed package before the checkout, so on a shell that
+sources `~/ros2_ws/install` the test needs `colcon build --packages-select blueboat_perception`
+first.
+
 ## Coordination note — BlueBoat-MCS launch dialog
 
 `BlueBoat-Control/docs/REQUESTS.md` R-1 (2026-10-15, another work stream) asks MCS for a

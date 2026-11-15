@@ -48,7 +48,7 @@ images + metadata  →  [preprocess: fixed_gray]  →  detector: dummy | YOLO ov
 | Q3 | Dataset mode now; MCS offers *Normal session* / *Dataset creation* on sim launches | §7, §8 |
 | Q4 | Preprocessing split by data need: per-ping / geometry steps in SSS, per-image steps in Perception | §4.3 |
 | Q5 | Accessible sources only | REFERENCES |
-| Q6 | SSS fixes its pixel→world (convention 2: `bottom_m` + 0.285 m lever arm), versioned in the metadata | §4.2 |
+| Q6 | SSS fixes its pixel→world (convention 2: `bottom_m` + 0.285 m lever arm), versioned in the metadata; since 2026-11-15 convention 3 adds the fore/aft arm (`lever_arm_m.x`, −0.345 m adopted, not measured), placed from the transducers' point (CR-PER-2) | §4.2 |
 | Q7 | MCS starts Perception for personalized-world Gazebo runs (Normal/Dataset) and real-robot sessions (Normal) | §8 |
 | Q8 | SSS adds per-row roll / pitch / yaw rate (from `/mavros/imu/data`) and device ping numbers | §4.1, topics.md |
 
@@ -156,21 +156,42 @@ Rules:
   convention). Records always report `t_min_s` / `t_max_s`.
 
 ### 4.2 Geometry — `core/geometry.py`
-- **Pixel → world, one function, two conventions** read from `meta["georef"]`:
+- **Pixel → world, one function, three conventions** read from `meta["georef"]`:
   - column `j` of width `W`: `k = W/2 − 1 − j` (port, `j < W/2`) or `j − W/2`
     (starboard); `s = (k + 0.5)·bin_pitch_m`; sign `+` port, `−` starboard;
   - **convention 1** (all sessions before the Q6 fix; `georef` absent):
     `y = sign·sqrt(max(s² − altitude_m², 0))`;
   - **convention 2** (Q6): `y = sign·(lever_y_side + sqrt(max(s² − bottom_m², 0)))`, with
     `lever_y_side` from `georef.lever_arm_m`;
-  - both: `wx = x − sin(yaw)·y`, `wy = y_row + cos(yaw)·y` (the flat-seabed projection,
-    R1 eq. 3.2; R6 eq. 2 with hp = 0).
+  - **convention 3** (GCS, 2026-11-15): the lateral rule of 2, placed from the
+    transducers' point `(sx, sy) = (x, y_row) + R(yaw)·(a, 0)`, `a = georef.lever_arm_m.x`
+    (+ forward); `a = 0` under conventions 1 and 2. `(x, y_row, yaw)` stays the navigation
+    pose (`rows_data`); the arm is never folded into it;
+  - all: `wx = sx − sin(yaw)·y`, `wy = sy + cos(yaw)·y` (the flat-seabed projection,
+    R1 eq. 3.2; R6 eq. 2 with hp = 0);
+  - the grids and the record's edge points (`polygon_xy`, `outline_xy`) go through one
+    definition, `geometry.to_world` / `sensor_point`, in the station's operation order
+    (`models/sonar.py` `sensor_point`, `seabed_imager.waterfall_pixel_to_world`). An arm of
+    exactly 0 returns the row pose untouched, as the station's does: `x + cos(yaw)·0.0` would
+    turn a −0.0 into +0.0 and change conventions 1 and 2 in canonical JSON;
+  - any other convention is rejected at input (`InputError`, topics.md §2).
+- **Why convention 3 (CR-PER-2, 2026-11-15).** The transducers sit 0.345 m aft of the
+  navigation point. Placed as convention 2, every world position Perception output for a
+  convention-3 picture was 0.345 m along the heading off the station's grid, so one object
+  passed on opposite headings came out 0.69 m apart.
 - **Tested against the station's own conversion.**
   - Convention 1: the `world_x/world_y` grids of the `_world.npz` files on disk. This
     covers real `beach_sept/seabed_images_object_boiteVsDistance` and
     `merged_sessions/bath1_2`, plus the seven live sim sessions with non-zero altitude.
   - Convention 2: grids produced by the fixed imager (SSS test fixtures and a fresh sim
     session).
+  - Convention 3 (2026-11-15): the GCS's own `rebuild_session` of two simulated recordings
+    with the arm at −0.345 m (b3a_sea_validation, 73 pictures; the object ladder, 186):
+    bit-exact on 259/259 pictures, and every detection's `world_xy` equal to the grid at its
+    pixel. The same recordings rebuilt with the arm at 0 (convention 2) give records
+    byte-identical to the code before the change. Evidence:
+    `~/ros2_ws/sim_runs/sim_acceptance/06_sss_followup_perception/handoff_perception.md`
+    (outside every repository).
   - Tolerance ≤ 1 float32 ulp, with the exact-match share reported. The GCS venv runs
     numpy 2.x, tests run numpy 1.26, so `sin`/`cos` may differ in the last bit.
 - **Derived per row and side:**
@@ -587,7 +608,7 @@ in the live log, and the comparison reports their count.
 pytest, ROS-free core, run with `/usr/bin/python3` (SSS conftest pattern: ROS blocked on
 `sys.meta_path` for the import sweep; node tests skipped via `find_spec` + `skipif`, never
 a module-level `importorskip`). Tests:
-- geometry vs the station (§4.2), both conventions;
+- geometry vs the station (§4.2), all three conventions;
 - dummy equals the station dummy on all on-disk sessions;
 - one record per image, including images with no detection, and `no_pixels` records;
 - record completeness and types against the `topics.md` schema;

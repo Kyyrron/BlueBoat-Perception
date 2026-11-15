@@ -1,22 +1,29 @@
 """Pixel -> world and the per-row / per-side geometry of a seabed image.
 
-One function, two conventions, read from the image's ``georef``:
+One function, three conventions, read from the image's ``georef``:
 
 * column ``j`` of width ``W``: ``k = W/2 − 1 − j`` (port, ``j < W/2``) or
   ``j − W/2`` (starboard); slant ``s = (k + 0.5)·bin_pitch_m``;
 * **convention 1** (every session before the Q6 fix, ``georef`` absent):
   ``y = ±sqrt(max(s² − altitude_m², 0))``;
-* **convention 2** (Q6): ``y = ±(lever_side + sqrt(max(s² − bottom_m², 0)))``;
-* both: ``wx = x − sin(yaw)·y``, ``wy = y_row + cos(yaw)·y`` -- the
+* **conventions 2 and 3**: ``y = ±(lever_side + sqrt(max(s² − bottom_m², 0)))``;
+* the transducers' point of a row: ``(sx, sy) = (x, y_row) + R(yaw)·(a, 0)``,
+  ``a`` the fore/aft arm (+ forward): ``georef.lever_arm_m.x`` under
+  **convention 3** (GCS, 2026-11-15), ``0`` under conventions 1 and 2;
+* all: ``wx = sx − sin(yaw)·y``, ``wy = sy + cos(yaw)·y`` -- the
   flat-seabed projection (Blondel 2009 eq. 3.2; Burguera & Oliver 2016
-  eq. 2 with hp = 0).
+  eq. 2 with hp = 0). ``(x, y_row, yaw)`` is the row's navigation pose
+  (``rows_data``); the arm is applied here, never folded into it.
 
 The grids are computed with exactly the operations, shapes and dtypes of
-the GCS (``models/sonar.py`` ``slant_col_to_y_local`` and
+the GCS (``models/sonar.py`` ``slant_col_to_y_local`` and ``sensor_point``,
 ``seabed_imager.waterfall_pixel_to_world``: float64 throughout, the row
 pose as an (H, 1) column, cast to float32 at the end), so they reproduce
 the station's ``_world.npz`` grids bit for bit on the same numpy. A pixel's
 world position is a lookup in those grids, as the station's own dummy did.
+An arm of exactly 0 leaves the row pose untouched (as the station's
+``sensor_point``): ``x + cos(yaw)·0.0`` would turn a −0.0 into +0.0, so
+conventions 1 and 2 keep every byte they had before convention 3 existed.
 """
 
 from __future__ import annotations
@@ -56,12 +63,41 @@ def row_altitude(img: SeabedImageInput) -> np.ndarray:
 
 def lateral_offset(img: SeabedImageInput, slant, port, h) -> np.ndarray:
     """Signed lateral offset y (+ port) of slant ranges under the
-    image's convention; broadcasting ``slant``/``port`` against ``h``."""
+    image's convention (conventions 2 and 3 share the lateral lever);
+    broadcasting ``slant``/``port`` against ``h``."""
     ground = np.sqrt(np.maximum(slant * slant - np.square(h), 0.0))
     if img.georef.convention >= 2:
         return np.where(port, img.georef.lever_y_port_m + ground,
                         -(img.georef.lever_y_stbd_m + ground))
     return np.where(port, ground, -ground)
+
+
+def fore_aft_arm(img: SeabedImageInput) -> float:
+    """The fore/aft arm ``a`` [m, + forward] the image's convention applies:
+    ``georef.lever_arm_m.x`` under convention 3, 0.0 under 1 and 2 (a
+    convention-2 picture is never shifted, whatever its ``x`` says)."""
+    return img.georef.lever_x_m if img.georef.convention == 3 else 0.0
+
+
+def sensor_point(x, y, yaw, lever_x: float, trig=np):
+    """The transducers' point of a row pose: ``(x, y) + R(yaw)·(lever_x, 0)``.
+
+    The GCS's ``models/sonar.py`` ``sensor_point``, operation for operation.
+    An arm of exactly 0 returns ``(x, y)`` untouched. ``trig`` is ``np``
+    (grids, broadcasting arrays) or ``math`` (scalar edge points), so each
+    caller keeps the sin / cos it has always used."""
+    if lever_x == 0.0:
+        return x, y
+    return x + trig.cos(yaw) * lever_x, y + trig.sin(yaw) * lever_x
+
+
+def to_world(x, y, yaw, y_local, lever_x: float, trig=np):
+    """World position of a lateral offset ``y_local`` (+ port) from a row
+    pose: ``sensor_point`` then ``(sx − sin(yaw)·y_local, sy + cos(yaw)·y_local)``,
+    the station's ``waterfall_pixel_to_world`` order. The one definition
+    for the grids and the edge points."""
+    sx, sy = sensor_point(x, y, yaw, lever_x, trig)
+    return sx - trig.sin(yaw) * y_local, sy + trig.cos(yaw) * y_local
 
 
 def world_grids(img: SeabedImageInput) -> Tuple[np.ndarray, np.ndarray]:
@@ -73,14 +109,14 @@ def world_grids(img: SeabedImageInput) -> Tuple[np.ndarray, np.ndarray]:
     x = img.rows.x[:, None]
     y = img.rows.y[:, None]
     yaw = img.rows.yaw[:, None]
-    wx = x - np.sin(yaw) * y_local
-    wy = y + np.cos(yaw) * y_local
+    wx, wy = to_world(x, y, yaw, y_local, fore_aft_arm(img))
     return wx.astype(np.float32), wy.astype(np.float32)
 
 
 def ground_range(img: SeabedImageInput, slant: float, h: float, port: bool) -> float:
     """|y| of one slant range: the ground range from the boat's centre
-    line (the lever arm included under convention 2)."""
+    line (the lateral lever arm included under conventions 2 and 3; the
+    fore/aft arm lies along the heading and does not change it)."""
     return float(abs(lateral_offset(img, np.float64(slant), bool(port), np.float64(h))))
 
 
@@ -185,17 +221,18 @@ def side_spans(img: SeabedImageInput) -> Dict[str, Dict[str, np.ndarray]]:
 
 def edge_points(img: SeabedImageInput, rows_idx: List[int], slant: np.ndarray,
                 port: bool) -> List[List[float]]:
-    """World points of one slant range per row (NaN rows skipped)."""
+    """World points of one slant range per row (NaN rows skipped), through
+    the same :func:`to_world` as the grids (scalar ``math`` sin / cos)."""
     pts = []
     h = row_altitude(img)
+    arm = fore_aft_arm(img)
     for i in rows_idx:
         si = slant[i]
         if not np.isfinite(si):
             continue
         yl = float(lateral_offset(img, np.float64(si), bool(port), np.float64(h[i])))
-        yaw = img.rows.yaw[i]
-        pts.append([float(img.rows.x[i] - math.sin(yaw) * yl),
-                    float(img.rows.y[i] + math.cos(yaw) * yl)])
+        px, py = to_world(img.rows.x[i], img.rows.y[i], img.rows.yaw[i], yl, arm, trig=math)
+        pts.append([float(px), float(py)])
     return pts
 
 

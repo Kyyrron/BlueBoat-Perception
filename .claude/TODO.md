@@ -8,6 +8,12 @@ the module's `.claude/CLAUDE.md`; the detector-input decisions in
 Phases 0–5 (2026-10-15/16: design, build, live checks 1–6, preprocessing study and
 decisions 6.1–6.7, handover); tiled YOLO task phases 0–5 (2026-10-23/24: tiling, merge,
 adapter, tile datasets with per-world classes, training and evaluation tools).
+CR-PER-2 and CR-PER-1 (2026-11-15).
+- **CR-PER-2:** georef convention 3 is placed from the transducers' point. It is bit-exact
+  with the station's grids on 259/259 rebuilt pictures, and conventions 1 and 2 are
+  byte-identical on 1,065 pictures.
+- **CR-PER-1:** the dataset labels use the transducer pose, confirmed by a run.
+- Evidence: `~/ros2_ws/sim_runs/sim_acceptance/06_sss_followup_perception/handoff_perception.md`.
 
 ## Next
 - [ ] **Phase 6 — run the comparison (owner):** build the simulated worlds in dataset
@@ -16,6 +22,34 @@ adapter, tile datasets with per-world classes, training and evaluation tools).
       evaluate on val, choose, then report once on test). Results "on simulated data".
 
 ## Open technical items
+- [ ] **Owner: rebuild the install** (`colcon build --packages-select blueboat_perception`,
+      from `~/ros2_ws`, a shell without the venv). Until then the installed node, and the
+      GCS's Run AI on a sourced shell, place convention-3 pictures as convention 2: 0.345 m
+      along the heading off the station's grid.
+- [ ] **The fore/aft arm −0.345 m is adopted from the simulator's profile, not measured**
+      (session 06, CR-OWN-1). On the real boat it counts from the navigation fix. Perception
+      reads it from each picture's `georef`, so a measured value needs no change here.
+- [ ] **REQUESTS R-5 (BlueBoat-SSS):** the convention-3 twin of
+      `test_live_perception_path_georeferences_with_convention_2`. Its body has been checked
+      from outside BlueBoat-SSS.
+- [ ] **Ray-cast runs: label box about 0.1 m ahead of the highlight** (measured 2026-11-15,
+      CR-PER-1 check b, ladder runs, along-track-symmetric objects).
+      - Box centre minus highlight centroid, along the heading, both passes the same sign:
+        `harbour_fast` +0.10 / +0.04 m, `harbour_live` +0.12 / +0.09 m (east / west).
+      - The geometric run gives +0.01 / +0.02 m.
+      - This is not the fore/aft arm: a navigation-pose label would sit 0.345 m behind, the
+        opposite sign.
+      - Largest for flat, wide objects (pallet, bicycle, mesh crate).
+      - Cause not investigated: the ray-cast's echo timing or beam, or the labeller's
+        ray-cast path. Check before training on ray-cast datasets.
+- [ ] **A session rebuilt from its `.svlog` cannot be labelled from its run's ground-truth
+      bag.**
+      - The rebuild stamps rows on the `.svlog`'s clock: 5.86 s before the live ROS clock
+        on the ladder run.
+      - The labeller pairs a row with its ping only within `GroundTruthBuffer.match_s` = 5 s.
+      - The offline tool then writes empty labels (sidecar `ground_truth_coverage: 0.0`)
+        and prints no warning.
+      - Possible fixes: warn when the coverage is 0; accept a clock offset.
 - [ ] **Tune the visibility threshold (to do once out of cloud mode, owner 2026-10-23).**
       2 dB is provisional (`tools/label_visibility.py`). On the first simulated datasets:
       `tools/draw_labels.py <dataset> --out DIR --stats`, look at the
