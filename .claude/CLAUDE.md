@@ -16,31 +16,13 @@ GCS seabed image (raw dB + PNG + metadata) -> join -> preprocess (detector input
 
 ## 1. Layout
 `blueboat_perception/` is the ROS 2 package (`ament_python`), one level below the git root.
-- `blueboat_perception/core/` — ROS-free, deterministic: numpy + stdlib. OpenCV (PNG
-  encode/decode) and PyYAML (world files) are imported lazily, inside functions.
-  - `image.py` `SeabedImageInput` (`from_wire` / `from_session_files`, georef conventions);
-    `geometry.py` pixel → world (conventions 1 / 2 / 3, one `to_world`), spans, footprint, turns;
-  - `preprocess.py` detector input (`fixed_gray` / `identity`, mask, disabled options);
-  - `detectors/` `dummy` (default) and `yolo` (Ultralytics adapter over tiles);
-    `tiling.py` across-track tiles; `merge.py` `nms` / `greedy_nmm`;
-  - `pipeline.py` (`Pipeline.run` / `run_full`), `calibration.py`, `uncertainty.py`
-    (`geometric_v1`), `records.py` (canonical JSON);
-  - `join.py` (`JoinBuffer`), `session.py` (offline reader), `dataset.py` (dataset
-    writer), `labels.py`, `sim_labels.py` (labels from simulator ground truth),
-    `dataroot.py`, `recordlog.py`, `stats.py`;
-  - `data/fixed_gray_v1.json` (the fixed mapping); `data/yolo_classes_v1.json` is LEGACY
-    (only `load_class_map` and test fixtures read it; datasets take classes from their
-    world).
-- `ros/perception_node.py` + `ros/convert.py` — the thin node; the only place rclpy and
-  message types are imported. `ros/ground_truth.py` — dataset mode's two ground-truth
-  subscriptions, the only online file naming those topics.
-- `cli/offline.py` (`blueboat-perception-offline`), `launch/perception_launch.py`,
-  `config/perception.yaml`, `tests/` (pytest).
-- `tools/` (not installed, offline): `fit_detector_input.py`, `preprocessing_study.py`
-  (reproduces STUDY §5), `draw_labels.py`, `label_visibility.py` (2 dB rule, shared),
-  `make_tile_dataset.py`, `train_yolo.py`, `evaluate_detector.py`. Tools import each other
-  from the `tools/` folder (`make_tile_dataset.code_version`, `label_visibility`).
-- `docs/` — DESIGN, topics, PREPROCESSING_STUDY, REFERENCES, REQUESTS, LIVE_CHECKS.
+- `core/` is ROS-free and deterministic (numpy + stdlib); OpenCV and PyYAML are imported
+  lazily, inside functions.
+- `core/data/yolo_classes_v1.json` is LEGACY: only `load_class_map` and test fixtures read it;
+  datasets take classes from their world.
+- `ros/` is the only place rclpy and message types are imported; `ros/ground_truth.py` is the
+  only online file naming the ground-truth topics.
+- `tools/` is not installed (offline only); its scripts import each other from that folder.
 
 ## 2. Interfaces (fields: `docs/topics.md`)
 | Topic | Type | Dir | QoS |

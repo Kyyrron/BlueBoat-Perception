@@ -69,8 +69,11 @@ discrepancies), for you to judge.
 
 ## R-5 BlueBoat-SSS — a convention-3 twin of the live-path georeference test (2026-11-15)
 
-**Status 2026-11-15: open**, for the BlueBoat-SSS owner. Nothing in BlueBoat-SSS was edited
-(CM-3).
+**Status 2026-11-15: applied**, by your order the same day ("do it yourself now"), in
+BlueBoat-SSS `tests/test_perception_golden.py` (the test below plus `from dataclasses import
+replace`). SSS gate after: the two Perception files 49 passed (45 + 4); the full bare suite
+398 passed / 110 skipped (394 / 110 before). SSS `.claude/CLAUDE.md` (gate count) and
+`blueboat_gcs/docs/PERCEPTION_INTEGRATION.md` (CR-PER-2 paragraph) were updated to match.
 
 **Need.** `tests/test_perception_golden.py`
 `test_live_perception_path_georeferences_with_convention_2` checks, through the live envelope,

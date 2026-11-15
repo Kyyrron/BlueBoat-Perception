@@ -13,6 +13,7 @@ CR-PER-2 and CR-PER-1 (2026-11-15).
   with the station's grids on 259/259 rebuilt pictures, and conventions 1 and 2 are
   byte-identical on 1,065 pictures.
 - **CR-PER-1:** the dataset labels use the transducer pose, confirmed by a run.
+- **R-5:** the convention-3 twin test was added to BlueBoat-SSS by your order.
 - Evidence: `~/ros2_ws/sim_runs/sim_acceptance/06_sss_followup_perception/handoff_perception.md`.
 
 ## Next
@@ -29,9 +30,6 @@ CR-PER-2 and CR-PER-1 (2026-11-15).
 - [ ] **The fore/aft arm −0.345 m is adopted from the simulator's profile, not measured**
       (session 06, CR-OWN-1). On the real boat it counts from the navigation fix. Perception
       reads it from each picture's `georef`, so a measured value needs no change here.
-- [ ] **REQUESTS R-5 (BlueBoat-SSS):** the convention-3 twin of
-      `test_live_perception_path_georeferences_with_convention_2`. Its body has been checked
-      from outside BlueBoat-SSS.
 - [ ] **Ray-cast runs: label box about 0.1 m ahead of the highlight** (measured 2026-11-15,
       CR-PER-1 check b, ladder runs, along-track-symmetric objects).
       - Box centre minus highlight centroid, along the heading, both passes the same sign:
