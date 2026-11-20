@@ -21,8 +21,12 @@ dicts, and the offline CLI reads the same dicts from the dataset's archival bag.
 - **Every ping cycle with contacts, the renderer's contacts:** ``{"t_sim",
   "contacts": [{"side", "object_id", "type", "slant_range_m", "extent_bins",
   "shadow_bins", "visible", "ping_number", "ghost", "via"}]}``. They say which
-  objects a ping saw, whether they are visible, and the shadow length the
-  renderer read off its visibility mask.
+  objects a ping saw and whether the renderer drew them unoccluded. **They never
+  set a box extent** (2026-11-18, ``SIM_VALIDITY_CONDITIONS.md`` §5.5: a contact is
+  never a label; ``slant_range_m`` is the across-track range, and ``shadow_bins``,
+  the renderer's geometric mask, ran 5 to 35 bins past the picture's shadow in the
+  acceptance report's C5 check). ``shadow_bins`` is kept in the detail as
+  ``s_mask``, for comparison only.
 
 **Geometry.** Per picture row and side, the simulator renderer's own model
 (BlueBoat-SSS-Sim ``sonar/renderer.py``):
@@ -37,13 +41,23 @@ dicts, and the offline CLI reads the same dicts from the dataset's archival bag.
   ``yaw``) is clipped to the strip, which gives the across-track interval
   ``[a_min, a_max]`` this ping sees. An empty clip means no echo in this row.
 - **Heights:** the sensor is ``dz = z_sensor − z_seabed`` above the seabed, and
-  the object top is ``H = proud·(1 − burial)`` above it.
+  the object top is ``H = proud·(1 − burial)`` above it. Without terrain the
+  seabed is flat at the sensor message's ``altitude_m`` (the contact's range only
+  for a legacy record without it).
 - **Highlight:** from the nearest top point ``hypot(a_min, dz − H)`` to the
   farther of ``hypot(a_max, dz − H)`` (far top) and ``hypot(a_min, dz)`` (the
   foot of the near face).
-- **Shadow end:** the larger of two estimates:
-  - the flat-floor tip ``hypot(a_max·dz/(dz − H), dz)``;
-  - the renderer's mask length, ``hypot(a_c + ha, dz) + shadow_bins·bin``.
+- **Shadow end** (2026-11-18): the flat-floor tip ``hypot(a_max·dz/(dz − H), dz)``
+  from the object's metadata and the seabed under it; the range limit when the
+  object reaches the transducer's height; never shorter than the highlight.
+  Before 2026-11-18 it was the larger of that tip and ``hypot(a_max, dz) +
+  shadow_bins·bin``. Measured on the C2 campaign mission against session 05's
+  picture-based shadow ends (``05_report/c2/c5_mission_dense_high_s1.json``), the
+  label end minus the picture's end went from +9.1 / +35.2 bins (concrete block 5 /
+  mooring block 48) to +9.1 / +14.4 bins. A ray traced over the terrain-only seabed
+  was tried and gave +6.2 / +41.5: not adopted. The flat tip still ends 6 to 14 bins
+  past the picture's half-level crossing on those two objects, before the range
+  margin.
 - **Range envelope:** both ends widen by ``range_margin_bins``, the half-width
   of the renderer's boxcar (5 bins at the default acquisition).
 - **Bins:** the device's own, ``[k·L/N, (k + 1)·L/N)``. The GCS's
@@ -54,8 +68,8 @@ dicts, and the offline CLI reads the same dicts from the dataset's archival bag.
   water's sound speed and bins them with the device's 1500 m/s, so a point at
   true range R is imaged at ``R·range_scale`` (0.973 at 1541 m/s; 1.0 for the
   geometric sonar and for a message without the key). Every slant range
-  computed here from true geometry is multiplied by it; ``shadow_bins`` is
-  already in device bins.
+  computed here from true geometry is multiplied by it (the diagnostic
+  ``s_mask`` adds ``shadow_bins`` unscaled: it is already in device bins).
 - **Columns:** port ``j = W/2 − 1 − k``, starboard ``j = W/2 + k``.
 - **Boxes:** one per object, side and contiguous run of rows: the union of the
   rows' intervals.
@@ -382,10 +396,20 @@ def ping_object_bins(pose, sign: int, o: WorldObject, contact: dict, z_seabed: O
                      beam_rad: float = math.radians(DEFAULT_BEAM_DEG),
                      margin_bins: int = DEFAULT_RANGE_MARGIN_BINS,
                      strip_sigmas: float = DEFAULT_STRIP_SIGMAS,
-                     range_scale: float = 1.0) -> Optional[dict]:
+                     range_scale: float = 1.0,
+                     altitude: Optional[float] = None) -> Optional[dict]:
     """The bins object ``o`` occupies in one ping (module docstring), or None
     when the ping's beam strip misses its footprint. ``range_scale``: true
-    slant range -> imaged range (the sensor message's; 1.0 = none)."""
+    slant range -> imaged range (the sensor message's; 1.0 = none).
+
+    Every extent comes from the world (the object's metadata and the seabed
+    height ``z_seabed`` under it) and the rendered transducer pose. The contact only
+    says that the object was in this ping's beam: its ``shadow_bins`` is reported
+    as ``s_mask`` for comparison and never sets the box (``SIM_VALIDITY_CONDITIONS.md``
+    §5.5: the renderer's geometric mask runs 5 to 35 bins past the picture's shadow).
+    Without terrain, the seabed under the object is taken at the sensor's own
+    ``altitude`` (the ground-truth sensor message), the contact's range only when
+    that is missing."""
     sx, sy, sz, _roll, _pitch, yaw = pose
     fwd, look = yaw, yaw + sign * math.pi / 2.0
     rx, ry = o.x - sx, o.y - sy
@@ -393,7 +417,9 @@ def ping_object_bins(pose, sign: int, o: WorldObject, contact: dict, z_seabed: O
     a_c = rx * math.cos(look) + ry * math.sin(look)
     if z_seabed is not None:
         dz = sz - z_seabed
-    else:                                         # no terrain: the renderer's own height
+    elif altitude is not None and math.isfinite(altitude) and altitude > 0.0:
+        dz = float(altitude)                      # no terrain: a flat seabed at the sensor's altitude
+    else:                                         # legacy record without an altitude
         s_c = float(contact["slant_range_m"])
         dz = math.sqrt(max(s_c * s_c - a_c * a_c, 0.0)) + o.height
     dz = max(dz, 1e-3)
@@ -413,15 +439,16 @@ def ping_object_bins(pose, sign: int, o: WorldObject, contact: dict, z_seabed: O
     k_r = float(range_scale)
     s_near = k_r * math.hypot(a_min, dz_top)
     s_hl = k_r * max(math.hypot(a_max, dz_top), math.hypot(a_min, dz))
-    if o.height > 0.0 and dz_top > 1e-3:
-        s_tip = k_r * math.hypot(a_max * dz / dz_top, dz)
+    shadow_from = "none"
+    if o.height > 0.0 and dz_top > 1e-3:          # flat seabed at the object's height
+        s_tip, shadow_from = k_r * math.hypot(a_max * dz / dz_top, dz), "flat_seabed"
     else:
         s_tip = k_r * math.hypot(a_max, dz) if o.height <= 0.0 else range_max_m
-    # the renderer's mask length, started at the far edge THIS ping crosses
-    # (``shadow_bins`` is already in device bins)
+    # the renderer's mask length (a contact field: reported for comparison only, never
+    # used; ``shadow_bins`` is already in device bins)
     s_mask = k_r * math.hypot(a_max, dz) \
         + max(float(contact.get("shadow_bins", 0.0)), 0.0) * bin_m
-    s_end = max(s_tip, s_mask, s_hl)
+    s_end = max(s_tip, s_hl)
     top = n_bins - 1
     k0 = int(math.floor(s_near / bin_m)) - margin_bins
     k1 = int(math.ceil(s_hl / bin_m)) - 1 + margin_bins
@@ -432,7 +459,7 @@ def ping_object_bins(pose, sign: int, o: WorldObject, contact: dict, z_seabed: O
     k2 = min(max(k2, k1), top)
     return {"k": (k0, k1, k2), "clipped": clipped, "slant": R, "across": a_c,
             "a_min": a_min, "a_max": a_max, "s_tip": s_tip, "s_mask": s_mask, "s_hl": s_hl,
-            "dz": dz, "shadow_m": max(s_end - s_hl, 0.0),
+            "dz": dz, "shadow_m": max(s_end - s_hl, 0.0), "shadow_from": shadow_from,
             "aspect": math.degrees(pc) % 180.0}
 
 
@@ -486,6 +513,9 @@ class SimGroundTruthLabelSource:
                 "beam_deg": math.degrees(self.beam_rad),
                 "range_margin_bins": self.range_margin_bins,
                 "box": "highlight + shadow, one per object, side and contiguous row run",
+                "shadow_end": "world geometry: the flat-floor tip of the object's far top edge "
+                              "(metadata + the seabed under it); contacts select objects, "
+                              "never set an extent",
                 "excluded": "multipath ghosts, wall echoes, pings where the object is "
                             "not visible or outside the beam strip"}
 
@@ -686,4 +716,4 @@ class SimGroundTruthLabelSource:
         return ping_object_bins(ping.pose, sign, o, contact, self._seabed.get(o.object_id),
                                 bin_m=bin_m, range_max_m=range_max, n_bins=half,
                                 beam_rad=self.beam_rad, margin_bins=self.range_margin_bins,
-                                range_scale=ping.range_scale)
+                                range_scale=ping.range_scale, altitude=ping.altitude)

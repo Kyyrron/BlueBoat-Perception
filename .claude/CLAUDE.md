@@ -14,6 +14,24 @@ GCS seabed image (raw dB + PNG + metadata) -> join -> preprocess (detector input
 (CM-1). `docs/DESIGN.md` explains why; the detector-input decisions and their evidence are
 `docs/PREPROCESSING_STUDY.md` §6. Where this file and the code disagree, the code wins.
 
+**Simulated data (simulator frozen 2026-11-18).** Simulated results follow `../SIM_VALIDITY_CONDITIONS.md`
+(superproject root). For the dataset and the detector:
+- **Labels from the rendered picture and the world metadata, never from a contact's `shadow_bins`** (§5.5 of
+  that file: `shadow_bins` is geometric, 5–35 bins too long; `slant_range_m` is across-track). **PER-LBL-1
+  done (2026-11-18):** the shadow end is the flat-floor tip from the metadata, no box extent comes from a
+  contact (`shadow_bins` is only reported as `s_mask`), and without terrain the height is the sensor's
+  `altitude_m`; contacts still select which objects a ping saw and their `visible` flag (tests
+  `test_sim_labels_shadow.py`).
+- Dataset rendered at the **R6 low end** with the production ray-cast `raycast_harbour_fast`; dataset and
+  evaluation worlds from **disjoint seed ranges**; split and calibrate by world. Train with **level and
+  per-ping gain augmentation** (simulated pictures are 1–2 dB brighter and more uniform than real). Report per
+  object family, with an oracle-detector arm. Never claim a field detection rate.
+- **CR-PER-2 (transducer lever arm) is applied** in `0d55d76` (2026-11-15; convention 3, `core/geometry.py`
+  `fore_aft_arm` / `sensor_point`; re-checked by session 12, `~/ros2_ws/sim_runs/perception/handoff_12_cr_per_2.md`):
+  re-run the module's tests and re-check it before any pipeline test.
+- The class map `core/data/yolo_classes_v1.json` (29 classes) is legacy: the World Builder's object set
+  version 2 has 11 classes since 2026-11-15 (open item 02-CR2).
+
 ## 1. Layout
 `blueboat_perception/` is the ROS 2 package (`ament_python`), one level below the git root.
 - `core/` is ROS-free and deterministic (numpy + stdlib); OpenCV and PyYAML are imported
@@ -68,9 +86,9 @@ GCS seabed image (raw dB + PNG + metadata) -> join -> preprocess (detector input
   label wait (`label_wait_s`) on `/clock` and records the ground-truth bag with
   `--use-sim-time`, so a simulation slowed below real time (the ray-cast sonar) labels
   and records as at real speed. The image join and every latency stay wall (provenance).
-  **But the ray-cast publishes no `ground_truth/contacts` yet** (`RenderedPing.contacts` is `[]`,
-  simulator `TODO.md`). Dataset mode on a ray-cast run therefore writes images with **empty** label
-  files. Use the geometric sonar for labelled datasets until that is built.
+  The harbour ray-cast profiles publish `ground_truth/contacts` since 2026-11-11 (before, a ray-cast
+  run's label files were empty); datasets use the production `raycast_harbour_fast`, the geometric sonar
+  is legacy.
 
 ## 3. Non-negotiables
 1. **Core ROS-free and deterministic.** No rclpy, Qt, OpenCV, torch or ultralytics at
@@ -122,10 +140,9 @@ GCS seabed image (raw dB + PNG + metadata) -> join -> preprocess (detector input
   per detection `turn_backscan`; `r* = v/|ω|`, ω averaged over `turn_window_s` (1 s).
 - Dataset mode writes the detector input as the training image; the sidecar declares
   `intensity_mapping: log`, `log_range_db = hi − lo` (Aug Studio).
-- **Labels** (`sim_labels.py`): one YOLO box per object = highlight + shadow, built per
-  row from the ping's rendering pose and the renderer's contacts and beam geometry;
-  classes = the world's object types sorted, ids from 0; ghosts, walls, hidden pings
-  skipped and counted (checked: `LIVE_CHECKS.md` check 6).
+- **Labels** (`sim_labels.py`): one YOLO box per object = highlight + shadow, per row from the rendering
+  pose, the world metadata and the beam geometry (contacts only select objects, PER-LBL-1); classes = the
+  world's types sorted, ids from 0; ghosts, walls, hidden pings skipped and counted (`LIVE_CHECKS.md` check 6).
 - **Tiles:** 256 × 256 native, across track, stride 128 (64 = an arm), flush tile at
   `W − T`, nadir kept, short pictures padded below with invalid zeros, a tile skipped only
   when valid share < 0.001 (counted).
@@ -166,27 +183,16 @@ python3 tools/evaluate_detector.py <datasets...> --split split.yaml --on val|tes
 /usr/bin/python3 tools/fit_detector_input.py --name fixed_gray_v2 --out … <real image folders>
 ```
 
-## 6. Gates
-- **Perception pytest** (no lint or type checker configured): **170 pass / 16 skip** with
-  system python and no ROS, corpus, torch or sibling repos (2026-11-15; before that date
-  `tests/test_corpus.py` failed at collection when no corpus was present). On the laptop with ROS
-  on the path and the corpus: **204 pass / 28 skip**. Skips: ROS node
-  and bag tests, corpus tests (`$BLUEBOAT_DATA_DIR/data/SSS_data` or
-  `~/ros2_ws/data/SSS_data`), real-Ultralytics tests, Aug Studio sidecar tests (need
-  pydantic and the Aug Studio beside this module:
-  `SSS-Dataset-Aug-Studio/.venv/bin/python -m pytest tests/test_dataset.py`). On the
-  laptop the node and corpus tests run too. A new session's pictures (convention 3 since
-  2026-11-15) must stay bit-exact in `test_corpus.py`. To test a session without placing it under
-  `~/ros2_ws/data/SSS_data`, set `BLUEBOAT_DATA_DIR` to a root holding `SSS_data/<folder>`.
-- **SSS** shares this contract: run its `tests/test_perception_golden.py` and
-  `tests/test_perception_bridge.py` on the laptop (they need libEGL for PySide6) whenever
-  the dummy's records could change.
-- **MCS:** `QT_QPA_PLATFORM=offscreen python3 smoke_test.py` (`perception ok`), `ruff check .`.
+## 6. Gates (full: `.claude/gates.md`, moved verbatim 2026-11-18; auto-loaded with the tests by `.claude/rules/gates.md`)
+- Perception pytest (no lint or type checker): 170 pass / 16 skip with the system python and no ROS, corpus,
+  torch or sibling repos (2026-11-15); on the laptop with ROS and the corpus 204 pass / 28 skip (222 / 28 after
+  session 12's added tests, 2026-11-18). A new session's pictures must stay bit-exact in `test_corpus.py`.
+- SSS `tests/test_perception_golden.py` / `test_perception_bridge.py` whenever the dummy's records could
+  change; MCS `smoke_test.py` (`perception ok`). Exact commands: superproject skill `module-gates`.
 
 ## 7. Where things are documented
 - Open work: `.claude/TODO.md` (first, out of cloud mode: tune the 2 dB visibility
   threshold with `draw_labels.py --stats`, decide the merge rule on held-out worlds).
 - Live checks and the real-boat command sheet: `docs/LIVE_CHECKS.md`.
 - SSS side: `BlueBoat-SSS/blueboat_sss/blueboat_gcs/docs/PERCEPTION_INTEGRATION.md`.
-- Superproject: root `.claude/CLAUDE.md` and the `module-gates` / `file-interfaces`
-  skills (REQUESTS R-4).
+- Superproject: root `.claude/CLAUDE.md`, skills `module-gates` / `file-interfaces` (REQUESTS R-4).

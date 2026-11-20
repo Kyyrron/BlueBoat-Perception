@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -168,3 +169,62 @@ def test_side_spans_use_the_conventions_altitude():
         near = spans[side]["near"]
         assert np.all(near >= img.rows.bottom - 1e-12)
         assert np.all(near - img.rows.bottom < 0.05 + 1e-12)
+
+
+# --- CR-PER-2 (session 12): Perception places a pixel where Belief places that ping's sample ---
+
+_BELIEF_GEOMETRY = (Path(__file__).resolve().parents[2].parent / "BlueBoat-Belief"
+                    / "blueboat_belief" / "blueboat_belief" / "core" / "geometry.py")
+
+
+def _belief_mirror():
+    """Belief's two placement steps (``core/geometry.py`` ``sensor_xy`` then
+    ``sample_xy``, ``core/belief.py`` ``_process_ping``), written out."""
+    def sensor_xy(x, y, yaw, arm):
+        return x + arm * math.cos(yaw), y + arm * math.sin(yaw)
+
+    def sample_xy(x, y, yaw, yoff):
+        s, c = math.sin(yaw), math.cos(yaw)
+        return x - yoff * s, y + yoff * c
+    return sensor_xy, sample_xy
+
+
+def _belief_real():
+    """Belief's own functions when the sibling checkout is beside this module
+    (loaded by file path: no package import, no dependency); else None."""
+    if not _BELIEF_GEOMETRY.is_file():
+        return None
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_belief_geometry_cr_per_2", _BELIEF_GEOMETRY)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.sensor_xy, mod.sample_xy
+
+
+@pytest.mark.parametrize("source", ["mirror", "belief"])
+@pytest.mark.parametrize("yaw_deg", [0, 90, 180, 270])
+@pytest.mark.parametrize("j", [12, 170])                 # one port bin, one starboard bin
+def test_convention_3_matches_belief_at_four_headings(source, yaw_deg, j):
+    fns = _belief_mirror() if source == "mirror" else _belief_real()
+    if fns is None:
+        pytest.skip(f"BlueBoat-Belief not beside this module ({_BELIEF_GEOMETRY})")
+    sensor_xy, sample_xy = fns
+    yaw, x0, y0, bottom, W, pitch = math.radians(yaw_deg), 3.0, -2.0, 2.0, 200, 0.1
+    img3, img2 = _pass(3, yaw, x0, y0, W=W), _pass(2, yaw, x0, y0, W=W)
+    wx3, wy3 = geo.world_grids(img3)
+    wx2, wy2 = geo.world_grids(img2)
+    # the same bin as the processor would publish it: signed ground offset, + port
+    port, s = geo.column_slant(W, pitch)
+    ground = math.sqrt(max(s[j] ** 2 - bottom ** 2, 0.0))
+    yoff = (0.285 + ground) if port[j] else -(0.285 + ground)
+    assert bool(port[j]) == (j < W // 2)
+    bx, by = sample_xy(*sensor_xy(x0, y0, yaw, ARM), yaw, np.float64(yoff))
+    for r in range(4):
+        assert abs(float(wx3[r, j]) - float(bx)) < 1e-3
+        assert abs(float(wy3[r, j]) - float(by)) < 1e-3
+    # the arm moves the point 0.345 m AFT along the heading, so the shift flips with it
+    dx, dy = float(wx3[0, j]) - float(wx2[0, j]), float(wy3[0, j]) - float(wy2[0, j])
+    assert dx == pytest.approx(ARM * math.cos(yaw), abs=1e-5)
+    assert dy == pytest.approx(ARM * math.sin(yaw), abs=1e-5)
+    assert math.hypot(dx, dy) == pytest.approx(0.345, abs=1e-5)
+    assert dx * math.cos(yaw) + dy * math.sin(yaw) == pytest.approx(-0.345, abs=1e-5)

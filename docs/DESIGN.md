@@ -453,15 +453,20 @@ cwd. Normally `~/ros2_ws/data/` (file-interfaces skill). Names are claimed exclu
     - the world folder's objects (`metadata.yaml`, else `scene_manifest.yaml`) and its
       terrain (`depth.npz`, else `scene.npz` read around each object);
     - the simulator's per-ping ground truth: the transducer pose each side was rendered
-      from (`.../sensor`), and the renderer's contacts (`.../contacts`: which objects a
-      ping saw, visibility, the shadow length off its visibility mask).
+      from (`.../sensor`, with its `altitude_m`), and the renderer's contacts (`.../contacts`:
+      which objects a ping saw and whether they are visible; a contact never sets a box
+      extent, 2026-11-18).
   - **Join:** each picture row → its source ping `(side, device ping_number)`, the
     nearest stamp resolving counter restarts.
   - **Per ping, the renderer's own geometry:**
     - the object's oriented footprint clipped to the beam strip `|along| <= min(3σ,
       R_max·θ/2)`, σ = R·θ/2.355, θ = 0.5°;
     - highlight from the nearest top point to the far top edge;
-    - shadow end = the longer of the flat-floor tip and the renderer's mask length;
+    - shadow end = the flat-floor tip from the object's metadata and the seabed under it
+      (2026-11-18; before, the longer of that tip and the renderer's mask length, which on the
+      production ray-cast runs 5–35 bins past the picture's shadow: superproject
+      `SIM_VALIDITY_CONDITIONS.md` §5.5). Measured on the c2 campaign mission against session 05's picture-based shadow ends (`~/ros2_ws/sim_runs/sim_acceptance/05_report/c2/c5_mission_dense_high_s1.json`): label end minus picture end
+      +9.1 / +35.2 bins before, +9.1 / +14.4 after (concrete block / mooring block);
     - ±2 bins for the pulse envelope;
     - device bins `L/N` (the GCS pitch is `L/(N − 1)`).
   - **Box:** one per object, side and contiguous row run = the union over its rows,

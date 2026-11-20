@@ -23,10 +23,8 @@ CR-PER-2 and CR-PER-1 (2026-11-15).
       evaluate on val, choose, then report once on test). Results "on simulated data".
 
 ## Open technical items
-- [ ] **Owner: rebuild the install** (`colcon build --packages-select blueboat_perception`,
-      from `~/ros2_ws`, a shell without the venv). Until then the installed node, and the
-      GCS's Run AI on a sourced shell, place convention-3 pictures as convention 2: 0.345 m
-      along the heading off the station's grid.
+- [x] **Owner: rebuild the install** (checked 2026-11-18: done; the installed `core/geometry.py` has
+      `fore_aft_arm`, so the installed node places convention-3 pictures from the transducers' point).
 - [ ] **The fore/aft arm −0.345 m is adopted from the simulator's profile, not measured**
       (session 06, CR-OWN-1). On the real boat it counts from the navigation fix. Perception
       reads it from each picture's `georef`, so a measured value needs no change here.
@@ -37,7 +35,8 @@ CR-PER-2 and CR-PER-1 (2026-11-15).
       - The geometric run gives +0.01 / +0.02 m.
       - This is not the fore/aft arm: a navigation-pose label would sit 0.345 m behind, the
         opposite sign.
-      - Largest for flat, wide objects (pallet, bicycle, mesh crate).
+      - Largest for flat, wide objects (pallet, bicycle, mesh crate; (2026-11-18) all three are among the 22
+        classes deleted in the World Builder's object set version 2).
       - Cause not investigated: the ray-cast's echo timing or beam, or the labeller's
         ray-cast path. Check before training on ray-cast datasets.
 - [ ] **A session rebuilt from its `.svlog` cannot be labelled from its run's ground-truth
@@ -96,7 +95,11 @@ CR-PER-2 and CR-PER-1 (2026-11-15).
     roll/pitch;
   - round objects (tyres, drums) use the bounding rectangle, a little wide at 45°;
   - the far edge runs a median 8 bins (up to ~27 cm) past the rendered shadow: the
-    conservative max of the flat-floor tip and the renderer's mask length.
+    conservative max of the flat-floor tip and the renderer's mask length. (2026-11-18: the
+    end is now the flat-floor tip only, PER-LBL-1; on the production ray-cast it still ends
+    +9.1 / +14.4 bins past the picture's half-level crossing on the two measurable boxes of the
+    C2 mission. A shadow end read off the rendered picture itself would close that; a ray over
+    the terrain-only seabed was tried and was worse, +41.5 bins on the mooring block.)
 - [ ] **Faint objects get labels the picture barely shows.** Ropes, chains and small
       plastic items at long range: in 67 of the 245 pings where the geometry places a
       single object (live run, check 6), the noise-free render changes by < 1 dB.

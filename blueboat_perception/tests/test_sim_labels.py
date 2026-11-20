@@ -46,7 +46,7 @@ def picture(first_ping=1000, t0=100.0, image_id=0, side_numbers=("port",), png=F
 
 
 def feed(buf, objects, *, first_ping=1000, t0=100.0, n_pings=H + 1, side="port",
-         contact_extra=None, contacts_first=False):
+         contact_extra=None, contacts_first=False, x_shift=0.0):
     """One sensor message per ping (the boat moving +x at STEP per ping, yaw 0)
     and the renderer's contacts for every object (all within range)."""
     sign = 1 if side == "port" else -1
@@ -54,7 +54,7 @@ def feed(buf, objects, *, first_ping=1000, t0=100.0, n_pings=H + 1, side="port",
         n = first_ping + j
         stamp = t0 - 0.05 * (H - 1 - j)
         t_sim = stamp - 50.0
-        pose = [STEP * j, sign * 0.285, SZ, 0.0, 0.0, 0.0]
+        pose = [STEP * j + x_shift, sign * 0.285, SZ, 0.0, 0.0, 0.0]
         sensor = {"t_sim": round(t_sim, 4), "stamp": round(stamp, 4),
                   "sensors": {side: {"pose": pose, "altitude_m": SZ - ZSEA,
                                      "ping_number": n, "dropped": False}}}
@@ -93,8 +93,7 @@ def expected_bins(o, x_sensor, side="port"):
     s_near = math.hypot(a_min, dz - o.height)
     s_hl = max(math.hypot(a_max, dz - o.height), math.hypot(a_min, dz))
     s_tip = math.hypot(a_max * dz / (dz - o.height), dz)
-    s_mask = math.hypot(a_max, dz) + 3.0 * BIN
-    s_end = max(s_tip, s_mask, s_hl)
+    s_end = max(s_tip, s_hl)          # the contact's shadow_bins never sets the box (2026-11-18)
     return (math.floor(s_near / BIN) - 2, math.ceil(s_hl / BIN) - 1 + 2,
             math.ceil(s_end / BIN) - 1 + 2)
 
@@ -128,6 +127,40 @@ def test_box_matches_the_documented_geometry_port():
     assert src.classes[yb.class_id] == "concrete_block"
 
 
+@pytest.mark.parametrize("side", ["port", "starboard"])
+def test_labels_follow_the_rendered_transducer_pose_not_the_navigation_pose(side):
+    """CR-PER-1 / CR-PER-2: the renderer reports each side's transducer pose,
+    0.345 m aft of the navigation pose (``mount_x_m``). The label rows follow
+    that pose; the picture's ``rows_data`` (navigation pose, convention 3
+    with its arm) never enter the projection."""
+    arm = -0.345
+    o = obj(x=0.25, L=0.1, y=5.0 if side == "port" else -5.0)   # unclipped both ways
+    boxes = {}
+    for name, shift, conv in (("nav", 0.0, 3), ("arm", arm, 3), ("arm_conv2", arm, 2)):
+        buf = SL.GroundTruthBuffer()
+        feed(buf, [o], side=side, x_shift=shift)
+        meta = make_metadata(H=H, W=W, pitch=PITCH, t0=100.0, convention=conv, lever_x=arm)
+        for i, r in enumerate(meta["rows_data"]):
+            n = 1000 + H - 1 - i
+            r["port_ping_number"] = n if side == "port" else 0
+            r["stbd_ping_number"] = n if side == "starboard" else 0
+            if name == "arm_conv2":
+                r["x_m"] += 10.0               # a navigation pose far off: ignored
+        img = SeabedImageInput.from_metadata(meta, np.zeros((H, W), np.float32))
+        (b,) = source([o], buf).detail_for(img)["boxes"]
+        boxes[name] = b
+    exp = {i: expected_bins(o, STEP * (H - 1 - i) + arm, side) for i in range(H)}
+    rows = [i for i, e in exp.items() if e is not None]
+    assert (boxes["arm"]["box_px"]["r0"], boxes["arm"]["box_px"]["r1"]) == (rows[0], rows[-1])
+    # transducers 0.345 m aft pass the object 0.345 / STEP pings later: newer rows
+    shift_rows = round(abs(arm) / STEP)
+    for k in ("r0", "r1"):
+        assert boxes["nav"]["box_px"][k] - boxes["arm"]["box_px"][k] in (shift_rows - 1,
+                                                                         shift_rows,
+                                                                         shift_rows + 1)
+    assert boxes["arm_conv2"] == boxes["arm"]
+
+
 def test_starboard_mirrors_port():
     o = obj(y=-5.0)
     buf = SL.GroundTruthBuffer()
@@ -154,14 +187,18 @@ def test_a_tall_object_starts_at_its_top_and_its_shadow_is_longer():
     assert boxes[1]["c0"] < boxes[0]["c0"]     # and its shadow reaches farther
 
 
-def test_the_renderers_longer_mask_shadow_wins():
+def test_a_contacts_shadow_bins_never_changes_the_box():
+    """SIM_VALIDITY_CONDITIONS.md §5.5: a contact is never a label. Until 2026-11-18
+    a longer renderer mask (``shadow_bins``) pushed the shadow end out; now the box
+    comes from the world geometry alone, whatever the contact states."""
     o = obj()
     a, b = SL.GroundTruthBuffer(), SL.GroundTruthBuffer()
     feed(a, [o])
     feed(b, [o], contact_extra={"shadow_bins": 200.0})
-    ca = source([o], a).detail_for(picture())["boxes"][0]["box_px"]["c0"]
-    cb = source([o], b).detail_for(picture())["boxes"][0]["box_px"]["c0"]
-    assert ca - cb >= 150
+    ba = source([o], a).detail_for(picture())["boxes"][0]
+    bb = source([o], b).detail_for(picture())["boxes"][0]
+    assert ba["box_px"] == bb["box_px"]
+    assert ba["shadow_m"] == bb["shadow_m"]
 
 
 def test_range_scale_moves_every_label_range_toward_the_sonar():

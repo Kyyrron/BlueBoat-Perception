@@ -17,6 +17,12 @@ GCS seabed image + metadata  ->  preprocess (fixed_gray)  ->  detector (dummy, o
 * `docs/` — `DESIGN.md`, `topics.md` (the interface contract), `PREPROCESSING_STUDY.md`,
   `REFERENCES.md`, `REQUESTS.md`.
 
+**State (2026-11-18).** Dummy detector by default; no YOLO model is trained yet. The fore/aft lever arm
+(CR-PER-2) is applied (`0d55d76`, 2026-11-15). The simulator that produces the training datasets is frozen
+(`sim-freeze-v1.0-2026-11-18`, literal acceptance verdict NOT READY, used as a model-conditional tool):
+datasets follow the superproject's `SIM_VALIDITY_CONDITIONS.md`. Next: the dataset, then the detector, then
+the pipeline in Gazebo (superproject `docs/PROJECT_STATE.md`).
+
 ## Commands
 
 ```bash
@@ -85,7 +91,9 @@ worlds; split by world, never by image; the test worlds are never used to tune a
 ```bash
 cd ~/ros2_ws/src/BlueBoat-SideScanSonar/BlueBoat-Perception
 # 0. datasets: one dataset-mode run per world (MCS: launch dialog, Session = Dataset creation;
-#    Sonar model Geometric: the ray-cast publishes no ground-truth contacts yet, so its labels are empty)
+#    since the 2026-11-18 freeze: Sonar model Ray-cast with the production raycast_harbour_fast profile,
+#    R6 low end, inside the superproject's SIM_VALIDITY_CONDITIONS.md; dataset and evaluation worlds from
+#    disjoint seeds; labels from the picture and the world metadata, never a contact)
 #    -> ~/ros2_ws/data/Dataset_data/<YYYY_MM_DD-HH_MM_SS>-<note>/
 # 1. a split file, by world folder name (or dataset folder name):
 cat > split.yaml <<'YAML'
