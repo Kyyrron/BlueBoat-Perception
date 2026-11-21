@@ -1,173 +1,239 @@
 # BlueBoat-Perception
 
-Seabed images in, detections and image records out, for the BlueBoat
-aspect-aware side-scan sonar survey.
+Finds objects on side-scan sonar seabed images for the BlueBoat survey.
+It is the station's **only detection source**: the GCS shows its detections and runs no detector of its own.
+By default it runs a **dummy detector** (one point per image).
+A YOLO detector over 256 × 256 tiles is built, but **no trained weights exist yet**.
+
+> **Scores are not probabilities.** Calibration is identity today, so every record says
+> `calibrated: false` and `confidence` is a raw detector score.
+
+## Where it fits
 
 ```
-GCS seabed image + metadata  ->  preprocess (fixed_gray)  ->  detector (dummy, or YOLO over 256x256 tiles)
-                             ->  calibration (identity)  ->  detections (/sss_ai/detections)
-                                                          +  one record per image (/sss_ai/image_records)
+sonar (BlueBoat-SSS, GCS seabed images) → Perception → Belief → Replanner → Control
 ```
 
-* `blueboat_perception/` — the ROS 2 package (`ament_python`):
-  * `blueboat_perception/core/` — ROS-free, deterministic core (numpy + stdlib);
-  * `blueboat_perception/ros/perception_node.py` — the thin node;
-  * `blueboat_perception/cli/offline.py` — the same pipeline over a recorded session;
-  * `launch/perception_launch.py` — `mode:=normal|dataset`.
-* `docs/` — `DESIGN.md`, `topics.md` (the interface contract), `PREPROCESSING_STUDY.md`,
-  `REFERENCES.md`, `REQUESTS.md`.
+Inside the module:
 
-**State (2026-11-18).** Dummy detector by default; no YOLO model is trained yet. The fore/aft lever arm
-(CR-PER-2) is applied (`0d55d76`, 2026-11-15). The simulator that produces the training datasets is frozen
-(`sim-freeze-v1.0-2026-11-18`, literal acceptance verdict NOT READY, used as a model-conditional tool):
-datasets follow the superproject's `SIM_VALIDITY_CONDITIONS.md`. Next: the dataset, then the detector, then
-the pipeline in Gazebo (superproject `docs/PROJECT_STATE.md`).
+```
+seabed image (raw dB + PNG + metadata) → join → detector input (fixed_gray)
+  → detector (dummy, or YOLO over tiles) → calibration (identity) → georeference
+  → /sss_ai/detections  +  one record per image on /sss_ai/image_records
+```
 
-## Commands
+Everything runs on the operator laptop, like every node of the project.
+
+## Prerequisites
+
+- ROS 2 Jazzy, workspace `~/ros2_ws`.
+- ROS packages: `rclpy`, `std_msgs`, `sensor_msgs`, `vision_msgs`, `launch`, `launch_ros`, `ros2bag`.
+- Python: `numpy`, `opencv` (`python3-opencv`), `PyYAML` (the superproject's `requirements.txt` lists them).
+- **YOLO only:** `ultralytics` and `torch`, importable by the node's Python. They are not needed for the dummy
+  and are not in `requirements.txt`; install them yourself.
+
+## Build
 
 ```bash
-# build (from ~/ros2_ws)
+cd ~/ros2_ws
 colcon build --packages-select blueboat_perception
-
-# run (MCS starts it for personalized-world Gazebo runs and real-robot sessions)
-ros2 launch blueboat_perception perception_launch.py                 # normal
-ros2 launch blueboat_perception perception_launch.py mode:=dataset dataset_name:=2026_10_16-10_00_00-test
-
-# offline over a recorded session (no ROS needed)
-python3 -m blueboat_perception.cli.offline ~/ros2_ws/data/SSS_data/sessions/<stamp>
-ros2 run blueboat_perception blueboat-perception-offline <session>   # same, installed
-
-# tests (from BlueBoat-Perception/blueboat_perception/, system python)
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /usr/bin/python3 -m pytest
+source install/setup.bash
 ```
 
-Outputs go under `<root>/data/` (normally `~/ros2_ws/data/`): `Perception_data/live/`,
-`Perception_data/offline/`, `Dataset_data/`, and, from the offline tools, `Tile_data/`,
-`Perception_models/`, `Perception_eval/`. Licence: Apache-2.0.
+## Run
 
-## Switching the detector (dummy ↔ YOLO11s ↔ YOLO26s)
+### Live node
 
-The detector is one parameter, `detector`, in `blueboat_perception/config/perception.yaml`
-(node) or `--detector` (offline CLI). Nothing else changes: same topics, same records.
+MCS starts the node for real-robot launches and for Gazebo runs in a built world. To start it by hand:
 
-| Detector | Set | Notes |
-|---|---|---|
-| **Dummy** (default) | `detector: dummy_center` | the station's former dummy: one point at the picture centre, score 0.5, `"dummy": true` everywhere. No model, no Ultralytics needed |
-| **YOLO11s** | `detector: yolo`, `detector_model: <root>/data/Perception_models/<a YOLO11s run>/weights/best.pt` | needs `ultralytics` + `torch` importable by the node's Python |
-| **YOLO26s** | the same, `detector_model:` a YOLO26s run's `best.pt` | the family is read from the weights; the record says which (`processing.detector.params.model.card.family`) |
-
-YOLO11s and YOLO26s differ only by the weights file: which family a run is depends on the
-`--model` it was trained from (`yolo11s.pt` or `yolo26s.pt`, below). Back to the dummy:
-`detector: dummy_center` (the `detector_model` line is then ignored).
-
-```yaml
-# config/perception.yaml (then colcon build, or pass the same keys with -p on the node)
-detector: yolo
-detector_model: /home/<you>/ros2_ws/data/Perception_models/yolo26s-tiles128-s0/weights/best.pt
-detector_device: cpu          # cpu = reproducible (offline = live); cuda:0 for a GPU
-merge: nms                    # or greedy_nmm, once the comparison has chosen
-map_min_confidence: 0.10      # what the GCS map draws; the records keep every detection
-```
 ```bash
-# the same without editing the file
-ros2 launch blueboat_perception perception_launch.py   # uses the yaml
-ros2 run blueboat_perception perception_node --ros-args --params-file <perception.yaml> \
-    -p detector:=yolo -p detector_model:=<best.pt>
-# offline over a session
-python3 -m blueboat_perception.cli.offline <session> --detector yolo --detector-model <best.pt>
+ros2 launch blueboat_perception perception_launch.py                       # normal mode
+ros2 launch blueboat_perception perception_launch.py use_sim_time:=true    # in a simulation graph
 ```
 
-**How YOLO sees a picture.** A picture is 256 rows × 1200–2402 slant bins. It is cut into
-256 × 256 tiles at native resolution (never resized), stride 128 across track, the nadir
-kept; every tile goes to YOLO at `imgsz` 256 in one batch; the boxes are shifted back to
-picture pixels and the overlapping tiles' duplicates merged (`merge`). One record per
-picture, as with the dummy. Details: `docs/DESIGN.md` §4.10.
+Launch arguments:
 
-## Training and comparing YOLO11s / YOLO26s (offline tools, not installed)
+| Argument | Default | Meaning |
+|---|---|---|
+| `mode` | `normal` | `normal` or `dataset` |
+| `dataset_name` | time-stamped | dataset folder name (dataset mode) |
+| `world_dir` | empty | simulated world folder; turns on labels from simulator ground truth |
+| `use_sim_time` | `false` | `true` in simulation: label wait and ground-truth bag on `/clock` |
+| `data_dir` | empty | data root (else `$BLUEBOAT_DATA_DIR`, else the workspace) |
 
-All results are **on simulated data**: the datasets come from dataset mode in simulator
-worlds; split by world, never by image; the test worlds are never used to tune anything.
+Check the node during a run:
+
+```bash
+ros2 topic echo --once /sss_ai/perception/status std_msgs/msg/String \
+    --qos-durability transient_local --qos-reliability reliable
+```
+
+### Dataset mode (training data from the simulator)
+
+```bash
+ros2 launch blueboat_perception perception_launch.py mode:=dataset \
+    dataset_name:=2026_11_21-10_00_00-test world_dir:=<world folder> use_sim_time:=true
+```
+
+- Writes images, YOLO labels and a manifest to `<root>/data/Dataset_data/<name>/`.
+- With `world_dir`, it also records the simulator ground truth into `<dataset>/ground_truth_bag/`.
+- Labels come from the rendered picture and the world metadata. Ground truth never reaches the detections.
+- Simulated datasets must follow the superproject's `SIM_VALIDITY_CONDITIONS.md`
+  (production sonar profile, envelope, disjoint seeds for dataset and evaluation worlds).
+
+### Offline over a recorded session
+
+The same pipeline, no ROS needed. Output equals the live output (once `provenance` and `source` are removed).
+
+```bash
+python3 -m blueboat_perception.cli.offline ~/ros2_ws/data/SSS_data/sessions/<stamp>
+ros2 run blueboat_perception blueboat-perception-offline <session>          # same, installed
+
+# compare with the live log of that run
+python3 -m blueboat_perception.cli.offline <session> \
+    --compare ~/ros2_ws/data/Perception_data/live/<stream_id>.jsonl
+
+# re-label a dataset-mode run offline
+python3 -m blueboat_perception.cli.offline <session> --dataset NAME \
+    --world <world folder> --ground-truth-bag <dataset>/ground_truth_bag
+```
+
+Useful options: `--detector yolo --detector-model <best.pt>`, `--preprocess fixed_gray|identity`,
+`--near-range-mask-m 0.75`, `--out DIR`. Full list: `--help`.
+
+## Topics
+
+| Topic | Type | Direction |
+|---|---|---|
+| `/sss_ai/seabed_image` | `sensor_msgs/Image` 32FC1 (raw dB) | in, from the GCS |
+| `/sss_ai/seabed_image/png` | `sensor_msgs/Image` mono8 | in, from the GCS |
+| `/sss_ai/seabed_image/metadata` | `std_msgs/String` (JSON) | in, from the GCS |
+| `/sss_ai/detections` | `vision_msgs/Detection2DArray`, one per image | out, to the GCS map |
+| `/sss_ai/image_records` | `std_msgs/String` (JSON, `image_record/1`) | out, to Belief and analysis |
+| `/sss_ai/perception/status` | `std_msgs/String` (JSON), 1 Hz | out |
+
+- `/sss_ai/detections` carries only detections with `confidence >= map_min_confidence` (0.10).
+  The records keep every detection.
+- One record per image, always. `detections: []` = searched, nothing found; `null` = could not search.
+
+Fields, QoS and parameters: `docs/topics.md` (the interface contract).
+
+## Configuration
+
+Node defaults: `blueboat_perception/config/perception.yaml` (installed; rebuild after editing it,
+or override with `-p` on the node). The main keys:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `detector` | `dummy_center` | `dummy_center` or `yolo` |
+| `detector_model` | `""` | YOLO weights, e.g. `<root>/data/Perception_models/<name>/weights/best.pt` |
+| `detector_device` | `cpu` | `cpu` (reproducible) or `cuda:0` |
+| `detector_tiling` | `tiles` | `tiles` (256 × 256) or `full` |
+| `tile_stride` | `128` | px across track |
+| `merge` | `nms` | `nms` or `greedy_nmm` (merging boxes of overlapping tiles) |
+| `map_min_confidence` | `0.10` | cut for the GCS map only |
+| `preprocess` | `fixed_gray` | detector input: `fixed_gray` or `identity` (the display PNG) |
+| `near_range_mask_m` | `0.0` | `0.0` (off) or `0.75` |
+| `calibration` | `identity` | only identity exists today |
+| `record_log` | `true` | write the live record log |
+
+Switch to YOLO without editing the file:
+
+```bash
+ros2 run blueboat_perception perception_node --ros-args \
+    --params-file ~/ros2_ws/install/blueboat_perception/share/blueboat_perception/config/perception.yaml \
+    -p detector:=yolo -p detector_model:=<best.pt>
+```
+
+YOLO11s and YOLO26s differ only by the weights file; the record names the family.
+
+## Training and evaluating YOLO (offline tools)
+
+The tools in `tools/` are not installed. Run them from the repository root. All results are **on simulated
+data**. Split by world, never by image. Never tune on the test worlds.
 
 ```bash
 cd ~/ros2_ws/src/BlueBoat-SideScanSonar/BlueBoat-Perception
-# 0. datasets: one dataset-mode run per world (MCS: launch dialog, Session = Dataset creation;
-#    since the 2026-11-18 freeze: Sonar model Ray-cast with the production raycast_harbour_fast profile,
-#    R6 low end, inside the superproject's SIM_VALIDITY_CONDITIONS.md; dataset and evaluation worlds from
-#    disjoint seeds; labels from the picture and the world metadata, never a contact)
-#    -> ~/ros2_ws/data/Dataset_data/<YYYY_MM_DD-HH_MM_SS>-<note>/
-# 1. a split file, by world folder name (or dataset folder name):
+DS=~/ros2_ws/data/Dataset_data
+T=~/ros2_ws/data/Tile_data
+M=~/ros2_ws/data/Perception_models
+
+# 1. split file, by world (or dataset) folder name
 cat > split.yaml <<'YAML'
 train: [world_a, world_b, world_c, world_d, world_e, world_f]
 val:   [world_g, world_h]
 test:  [world_i, world_j]
 YAML
-DS=~/ros2_ws/data/Dataset_data
-# 2. tile datasets (one per arm), and the full-picture baseline
+
+# 2. look at the labels (overlays, crops, visibility statistics)
+/usr/bin/python3 tools/draw_labels.py $DS/<dataset> --out DIR --crops --stats
+
+# 3. tile dataset (also: --stride 64, or --mode full for the full-picture baseline)
 python3 tools/make_tile_dataset.py $DS/* --split split.yaml --name tiles128
-python3 tools/make_tile_dataset.py $DS/* --split split.yaml --name tiles64 --stride 64
-python3 tools/make_tile_dataset.py $DS/* --split split.yaml --name full --mode full
-# 3. train (seeded; add --device 0 on a GPU); repeat with --model yolo26s.pt
-T=~/ros2_ws/data/Tile_data
+
+# 4. train (--model yolo11s.pt or yolo26s.pt; --device 0 for a GPU)
 python3 tools/train_yolo.py --data $T/tiles128/data.yaml --model yolo11s.pt --name y11s-t128-s0
-python3 tools/train_yolo.py --data $T/tiles128/data.yaml --model yolo26s.pt --name y26s-t128-s0
-python3 tools/train_yolo.py --data $T/tiles64/data.yaml  --model yolo11s.pt --name y11s-t64-s0
-python3 tools/train_yolo.py --data $T/full/data.yaml --imgsz 640 --model yolo11s.pt --name y11s-full-s0
-python3 tools/train_yolo.py --data $T/tiles128/data_gray1.yaml --model yolo11s.pt --name y11s-t128-g1-s0
-# 4. evaluate on the val worlds (choose merge rule / threshold here), then once on test
-M=~/ros2_ws/data/Perception_models
+
+# 5. evaluate on val (choose merge rule and threshold here), then once with --on test
 python3 tools/evaluate_detector.py $DS/* --split split.yaml --on val --name y11s-t128-nms \
     --detector yolo --detector-model $M/y11s-t128-s0/weights/best.pt --merge nms
-python3 tools/evaluate_detector.py $DS/* --split split.yaml --on val --name y11s-t128-gnmm \
-    --detector yolo --detector-model $M/y11s-t128-s0/weights/best.pt --merge greedy_nmm
-python3 tools/evaluate_detector.py $DS/* --split split.yaml --on val --name y11s-full \
-    --detector yolo --detector-model $M/y11s-full-s0/weights/best.pt --detector-tiling full
-python3 tools/evaluate_detector.py $DS/* --split split.yaml --on val --name y11s-t64 \
-    --detector yolo --detector-model $M/y11s-t64-s0/weights/best.pt --tile-stride 64
-# ... the same for the YOLO26s runs; after the choices are fixed, the same commands with --on test
-```
-Each step writes a JSON beside its output (`manifest.json`, `model.json`,
-`results.json`): configuration, dataset and world split, seed, model, library and code
-versions. Augmentation is set explicitly in `tools/train_yolo.py` (no hue / saturation,
-rotation, shear, perspective, mosaic, scale or translate; whole-tile flips only;
-`--no-flips` for the heading-response experiment). `tools/draw_labels.py DATASET --out DIR
---stats` shows the label boxes and each box's visibility class (2 dB rule).
-
-## What is in `Perception_data/`
-
-`~/ros2_ws/data/Perception_data/` holds what Perception writes about the seabed images it
-has processed. It has two subfolders. Neither is ever overwritten: a name already taken
-gets `-2`, `-3`, … appended.
-
-```
-Perception_data/
-  live/<stream_id>.jsonl          written while the node runs
-  offline/<session>/              written by blueboat-perception-offline
-      records.jsonl
-      detections.json
-      summary.json
 ```
 
-* **`live/<stream_id>.jsonl`** — the live record log, one file per stream (one GCS run,
-  e.g. `gcs-20261020T004952Z-f969`). Each line is one JSON **image record**, written as
-  soon as that image is processed, so a node that is killed leaves every finished line
-  readable. These are the same records published on `/sss_ai/image_records`. A record holds:
-  the image key (`stream_id/image_id`), its input and time span, the boat track, the
-  per-side summary, the footprint on the seabed, the processing used (preprocessing,
-  detector, calibration), the detections, and `provenance`. `detections: []` means the
-  image was searched and nothing was found; `null` means there were no pixels.
-  `source` is `live`.
-* **`offline/<session>/records.jsonl`** — the same records, made by running the pipeline
-  over a saved GCS session (`source: offline`). Nothing is read from or written into the
-  session itself.
-* **`offline/<session>/detections.json`** — every detection of that run in one flat list.
-* **`offline/<session>/summary.json`** — counts (images, detections, detector statuses),
-  the stream ids, the pipeline configuration, the run time, and, with `--compare`, the
-  result of comparing against a live log.
+- Each step writes a JSON beside its output (configuration, split, seed, versions).
+- `train_yolo.py` sets augmentation explicitly; `--no-flips` turns off the flips.
+- Not decided yet: the merge rule (`nms` / `greedy_nmm`) and the 2 dB label visibility threshold.
 
-Offline and live are meant to be equal: `--compare live/<stream_id>.jsonl` checks that the
-records match byte for byte once `provenance` and `source` are removed.
+Other tools: `tools/preprocessing_study.py` (reproduces `docs/PREPROCESSING_STUDY.md` §5, read-only) and
+`tools/fit_detector_input.py` (fits a new detector-input mapping on real data, under a new name).
 
-Dataset folders are not here: they go to `Dataset_data/` (dataset mode only).
+## Output files
 
-Dev tool (not installed): `tools/preprocessing_study.py` reproduces the Phase 4
-measurements of `docs/PREPROCESSING_STUDY.md` §5 from the recorded sessions (read-only).
+All under `<root>/data/` (normally `~/ros2_ws/data/`). Nothing is overwritten: a taken name gets `-2`, `-3`, ….
+
+| Folder | Written by | Content |
+|---|---|---|
+| `Perception_data/live/<stream_id>.jsonl` | live node | one image record per line |
+| `Perception_data/offline/<session>/` | offline CLI | `records.jsonl`, `detections.json`, `summary.json` |
+| `Dataset_data/<name>/` | dataset mode | `images/`, `display/`, `labels/`, `raw/`, `manifest.json`, `data.yaml`, `ground_truth_bag/` |
+| `Tile_data/`, `Perception_models/`, `Perception_eval/` | offline tools | tile datasets, trained models, evaluations |
+
+A recording session is only read, never written.
+
+## Tests
+
+From `BlueBoat-Perception/blueboat_perception/`, with the system Python
+(do not source `~/ros2_ws/install/setup.bash` first: its venv Python lacks pytest):
+
+```bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /usr/bin/python3 -m pytest
+```
+
+## Layout
+
+```
+BlueBoat-Perception/
+  blueboat_perception/            ROS 2 package (ament_python)
+    blueboat_perception/core/     ROS-free pipeline: join, preprocess, detectors, tiling, merge, records, labels
+    blueboat_perception/ros/      the node (perception_node.py) and ground-truth subscriber
+    blueboat_perception/cli/      offline.py, the offline runner
+    config/perception.yaml        node defaults
+    launch/perception_launch.py
+    tests/
+  tools/                          offline tools: datasets, training, evaluation, studies (not installed)
+  docs/                           design and contract documents
+```
+
+## Further reading
+
+| Document | What |
+|---|---|
+| `docs/topics.md` | interface contract: topics, record fields, parameters |
+| `docs/DESIGN.md` | why the pipeline is built this way (tiling, merge, labels) |
+| `docs/PREPROCESSING_STUDY.md` | detector-input study and decisions (§6) |
+| `docs/LIVE_CHECKS.md` | live checks and the real-boat command sheet |
+| `docs/REFERENCES.md` | literature behind every non-software choice |
+| `docs/REQUESTS.md` | requests to neighbouring modules |
+| `../BlueBoat-SSS/blueboat_sss/blueboat_gcs/docs/PERCEPTION_INTEGRATION.md` | the GCS side |
+| `../SIM_VALIDITY_CONDITIONS.md` | rules for simulated datasets and results |
+
+Licence: Apache-2.0.
