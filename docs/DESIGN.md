@@ -48,7 +48,7 @@ images + metadata  →  [preprocess: fixed_gray]  →  detector: dummy | YOLO ov
 | Q3 | Dataset mode now; MCS offers *Normal session* / *Dataset creation* on sim launches | §7, §8 |
 | Q4 | Preprocessing split by data need: per-ping / geometry steps in SSS, per-image steps in Perception | §4.3 |
 | Q5 | Accessible sources only | REFERENCES |
-| Q6 | SSS fixes its pixel→world (convention 2: `bottom_m` + 0.285 m lever arm), versioned in the metadata; since 2026-11-15 convention 3 adds the fore/aft arm (`lever_arm_m.x`, −0.345 m adopted, not measured), placed from the transducers' point (CR-PER-2) | §4.2 |
+| Q6 | SSS fixes its pixel→world (convention 2: `bottom_m` + 0.285 m lever arm), versioned in the metadata; since 2026-11-15 convention 3 adds the fore/aft arm (`lever_arm_m.x`, −0.345 m adopted, not measured), placed from the transducers' point | §4.2 |
 | Q7 | MCS starts Perception for personalized-world Gazebo runs (Normal/Dataset) and real-robot sessions (Normal) | §8 |
 | Q8 | SSS adds per-row roll / pitch / yaw rate (from `/mavros/imu/data`) and device ping numbers | §4.1, topics.md |
 
@@ -175,7 +175,7 @@ Rules:
     exactly 0 returns the row pose untouched, as the station's does: `x + cos(yaw)·0.0` would
     turn a −0.0 into +0.0 and change conventions 1 and 2 in canonical JSON;
   - any other convention is rejected at input (`InputError`, topics.md §2).
-- **Why convention 3 (CR-PER-2, 2026-11-15).** The transducers sit 0.345 m aft of the
+- **Why convention 3 (2026-11-15).** The transducers sit 0.345 m aft of the
   navigation point. Placed as convention 2, every world position Perception output for a
   convention-3 picture was 0.345 m along the heading off the station's grid, so one object
   passed on opposite headings came out 0.69 m apart.
@@ -465,7 +465,7 @@ cwd. Normally `~/ros2_ws/data/` (file-interfaces skill). Names are claimed exclu
     - shadow end = the flat-floor tip from the object's metadata and the seabed under it
       (2026-11-18; before, the longer of that tip and the renderer's mask length, which on the
       production ray-cast runs 5–35 bins past the picture's shadow: superproject
-      `SIM_VALIDITY_CONDITIONS.md` §5.5). Measured on the c2 campaign mission against session 05's picture-based shadow ends (`~/ros2_ws/sim_runs/sim_acceptance/05_report/c2/c5_mission_dense_high_s1.json`): label end minus picture end
+      `SIM_VALIDITY_CONDITIONS.md` §5.5). Measured on the c2 campaign mission against the acceptance report's picture-based shadow ends (`~/ros2_ws/sim_runs/sim_acceptance/05_report/c2/c5_mission_dense_high_s1.json`): label end minus picture end
       +9.1 / +35.2 bins before, +9.1 / +14.4 after (concrete block / mooring block);
     - ±2 bins for the pulse envelope;
     - device bins `L/N` (the GCS pitch is `L/(N − 1)`).
